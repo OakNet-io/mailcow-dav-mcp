@@ -618,6 +618,9 @@ def _check() -> None:
     except RuntimeError as e:
         print(f"ERRORE CONFIG: {e}", file=sys.stderr)
         sys.exit(1)
+    except Exception as e:  # URL malformato o errore imprevisto: una riga chiara invece del traceback
+        print(f"ERRORE: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(3)
     print(f"OK  server={info['server']}  user={info['user']}  principal={info['principal']}")
     print("Rubriche:  " + (", ".join(f"{b['id']} ({b['name']})" for b in info["addressbooks"]) or "-"))
     print("Calendari: " + (", ".join(f"{c['id']} ({c['name']})" for c in info["calendars"]) or "-"))

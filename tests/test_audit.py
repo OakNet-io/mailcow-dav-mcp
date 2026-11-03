@@ -360,3 +360,31 @@ def test_intermediate_stage_capped(monkeypatch):
                                              headers={"Content-Encoding": "gzip, gzip"}))
     with pytest.raises(DavError, match="oltre"):
         dav.get("/a/x")
+
+
+# -- errori di rete: messaggio leggibile, senza credenziali -----------------------------------
+
+def test_transport_error_becomes_dav_error():
+    def down(req):
+        raise httpx.ConnectError("nodename nor servname provided", request=req)
+
+    with pytest.raises(DavError, match="non raggiungibile") as exc:
+        _client(down).get("/a/1.vcf")
+    assert "secret" not in str(exc.value)
+
+
+def test_check_prints_one_line_on_network_error(monkeypatch, capsys):
+    def boom():
+        raise DavError("PROPFIND /x: server DAV non raggiungibile (ConnectError: boom)")
+
+    monkeypatch.setattr(server, "dav_status", boom)
+    with pytest.raises(SystemExit) as code:
+        server._check()
+    assert code.value.code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("ERRORE DAV:") and "Traceback" not in err
+
+    monkeypatch.setattr(server, "dav_status", lambda: (_ for _ in ()).throw(ValueError("bad url")))
+    with pytest.raises(SystemExit) as code:
+        server._check()
+    assert code.value.code == 3
