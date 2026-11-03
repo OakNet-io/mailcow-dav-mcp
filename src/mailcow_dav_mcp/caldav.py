@@ -61,23 +61,40 @@ def _check_rrule(text: str, start: date | datetime | None = None) -> vRecur:
     if problem:
         raise ValueError(f"rrule: {problem} (usa almeno FREQ=HOURLY e INTERVAL>=1)")
     if start is not None:
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-        from dateutil.rrule import rrulestr
-
-        naive = start.replace(tzinfo=None) if isinstance(start, datetime) else datetime.combine(start, time(0, 0))
-        pool = ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(lambda: next(iter(rrulestr(rule.to_ical().decode(), dtstart=naive)), None))
-        try:
-            first = future.result(timeout=2)
-        except FutureTimeout:
-            first = None
-        except Exception as e:
-            raise ValueError(f"rrule non valida: {e}") from None
-        finally:
-            pool.shutdown(wait=False)
-        if first is None:
-            raise ValueError("rrule non produce nessuna occorrenza (combinazione di BYxxx impossibile?)")
+        _probe_rrule(rule.to_ical().decode(), start)
     return rule
+
+
+_PROBE = """
+import sys
+from datetime import datetime, timezone
+from dateutil.rrule import rrulestr
+start = datetime.fromisoformat(sys.argv[2])
+print("ok" if next(iter(rrulestr(sys.argv[1], dtstart=start)), None) is not None else "none")
+"""
+
+
+def _probe_rrule(text: str, start: date | datetime) -> None:
+    """La regola deve produrre almeno un'occorrenza. Il calcolo gira in un processo separato con timeout:
+    dateutil non è interrompibile, e un thread bloccato su una regola impossibile resterebbe occupato."""
+    import subprocess
+    import sys
+
+    if isinstance(start, datetime) and start.tzinfo is not None:
+        dt = start.astimezone(timezone.utc)
+        text = re.sub(r"UNTIL=(\d{8})(?:T(\d{6}))?Z?", lambda m: f"UNTIL={m.group(1)}T{m.group(2) or '235959'}Z", text)
+    else:
+        dt = start if isinstance(start, datetime) else datetime.combine(start, time(0, 0))
+        text = re.sub(r"(UNTIL=\d{8}(?:T\d{6})?)Z", r"\1", text)
+    try:
+        res = subprocess.run([sys.executable, "-I", "-c", _PROBE, text, dt.isoformat()],
+                             capture_output=True, text=True, timeout=3)
+    except subprocess.TimeoutExpired:
+        raise ValueError("rrule troppo costosa da calcolare (nessuna occorrenza trovata in 3 secondi)") from None
+    if res.returncode != 0:
+        raise ValueError("rrule non valida: " + (res.stderr.strip().splitlines() or ["errore"])[-1])
+    if res.stdout.strip() != "ok":
+        raise ValueError("rrule non produce nessuna occorrenza (combinazione di BYxxx impossibile?)")
 
 
 # -- date/ora ---------------------------------------------------------------

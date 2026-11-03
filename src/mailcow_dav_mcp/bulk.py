@@ -441,7 +441,10 @@ class Bulk:
             fields = row_to_fields(row)
             if not fields:
                 continue
-            cards.append(new_vcard(uid=_cell_unsafe((row.get("uid") or "").strip()) or None, **fields))
+            card = new_vcard(uid=_cell_unsafe((row.get("uid") or "").strip()) or None, **fields)
+            if sum(len(v) for v in card.contents.values()) > _MAX_CARD_FIELDS:
+                raise ValueError(f"Riga con troppi campi (max {_MAX_CARD_FIELDS}): file non valido?")
+            cards.append(card)
             if len(cards) > _max_import_cards():
                 raise ValueError(_too_many())
         if not cards:
