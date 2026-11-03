@@ -67,9 +67,12 @@ def _check_rrule(text: str, start: date | datetime | None = None) -> vRecur:
 
 _PROBE = """
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dateutil.rrule import rrulestr
 start = datetime.fromisoformat(sys.argv[2])
+if sys.argv[3]:
+    start = start.replace(tzinfo=ZoneInfo(sys.argv[3]))
 print("ok" if next(iter(rrulestr(sys.argv[1], dtstart=start)), None) is not None else "none")
 """
 
@@ -80,14 +83,17 @@ def _probe_rrule(text: str, start: date | datetime) -> None:
     import subprocess
     import sys
 
+    zone = ""
     if isinstance(start, datetime) and start.tzinfo is not None:
-        dt = start.astimezone(timezone.utc)
+        # ora locale nel suo fuso: BYHOUR & co. valgono sull'ora locale, non su quella UTC
+        zone = getattr(start.tzinfo, "key", None) or "UTC"
+        dt = start.astimezone(ZoneInfo(zone)).replace(tzinfo=None)
         text = re.sub(r"UNTIL=(\d{8})(?:T(\d{6}))?Z?", lambda m: f"UNTIL={m.group(1)}T{m.group(2) or '235959'}Z", text)
     else:
         dt = start if isinstance(start, datetime) else datetime.combine(start, time(0, 0))
         text = re.sub(r"(UNTIL=\d{8}(?:T\d{6})?)Z", r"\1", text)
     try:
-        res = subprocess.run([sys.executable, "-I", "-c", _PROBE, text, dt.isoformat()],
+        res = subprocess.run([sys.executable, "-I", "-c", _PROBE, text, dt.isoformat(), zone],
                              capture_output=True, text=True, timeout=3)
     except subprocess.TimeoutExpired:
         raise ValueError("rrule troppo costosa da calcolare (nessuna occorrenza trovata in 3 secondi)") from None

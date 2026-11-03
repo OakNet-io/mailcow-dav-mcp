@@ -242,7 +242,9 @@ class _Decoder:
         if len(encs) > 3:
             raise DavError(f"Troppe codifiche concatenate: {encoding!r}")
         # Content-Encoding elenca le codifiche nell'ordine in cui sono state applicate: si decodifica al contrario
-        self.stages = [{"enc": e, "d": zlib.decompressobj(zlib.MAX_WBITS | 32), "raw": False} for e in reversed(encs)]
+        self.stages = [{"enc": e, "d": zlib.decompressobj(zlib.MAX_WBITS | 32), "raw": False, "out": 0}
+                       for e in reversed(encs)]
+        self.limit = max_response()
 
     def _run(self, stage: dict[str, Any], data: bytes, room: int, final: bool) -> Iterator[bytes]:
         step = max(1, min(room, 1 << 20)) + 65536
@@ -255,6 +257,9 @@ class _Decoder:
                 stage["d"], stage["raw"] = zlib.decompressobj(-zlib.MAX_WBITS), True  # deflate "nudo"
                 continue
             if out:
+                stage["out"] += len(out)  # anche gli stadi intermedi hanno il tetto: niente lavoro nascosto
+                if stage["out"] > self.limit:
+                    raise DavError(f"Risposta compressa oltre {self.limit // 1048576} MB (MAILCOW_DAV_MAX_RESPONSE_MB)")
                 yield out
             data = stage["d"].unconsumed_tail
             if not data and len(out) < step:

@@ -340,3 +340,23 @@ def test_csv_field_cap(tmp_path):
     f.write_text("fn,emails\nMario," + " | ".join(f"m{i}@example.com" for i in range(2000)) + "\n")
     with pytest.raises(ValueError, match="troppi campi"):
         Bulk(None)._load(str(f))
+
+
+def test_rrule_probe_uses_local_wall_time():
+    ev = Event()
+    apply_event_fields(ev, TZ, start="2026-11-03T08:00",
+                       rrule="FREQ=HOURLY;INTERVAL=2;BYHOUR=8,10,12,14,16,18;COUNT=10")
+    assert ev.get("rrule") is not None
+
+
+def test_intermediate_stage_capped(monkeypatch):
+    monkeypatch.setenv("MAILCOW_DAV_MAX_RESPONSE_MB", "1")
+    import io
+    inner = io.BytesIO()
+    with gzip.GzipFile(filename="x" * (8 * 1024 * 1024), mode="wb", fileobj=inner) as g:
+        g.write(b"OK")
+    body = gzip.compress(inner.getvalue())
+    dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(body),
+                                             headers={"Content-Encoding": "gzip, gzip"}))
+    with pytest.raises(DavError, match="oltre"):
+        dav.get("/a/x")
