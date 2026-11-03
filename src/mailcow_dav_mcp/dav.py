@@ -6,7 +6,7 @@ import os
 import posixpath
 import zlib
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Iterable, Iterator
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -114,13 +114,22 @@ class DavClient:
                 raise DavError(f"{method} {path}: risposta troppo grande ({int(declared) // 1048576} MB, "
                                f"max {limit // 1048576} MB: MAILCOW_DAV_MAX_RESPONSE_MB)")
             buf = bytearray()
-            decoder = _decoder(raw.headers.get("Content-Encoding", ""))
-            for chunk in raw.iter_raw():  # decompressione a pezzi limitati: niente picchi di memoria (gzip bomb)
-                for piece in decoder(chunk, limit + 1 - len(buf)):
+            decoder = _Decoder(raw.headers.get("Content-Encoding", ""))
+            received = 0
+
+            def take(pieces: Iterator[bytes]) -> None:
+                for piece in pieces:
                     buf.extend(piece)
                     if len(buf) > limit:
                         raise DavError(f"{method} {path}: risposta oltre {limit // 1048576} MB "
                                        "(MAILCOW_DAV_MAX_RESPONSE_MB)")
+
+            for chunk in raw.iter_raw():  # decompressione a pezzi limitati: niente picchi di memoria (gzip bomb)
+                received += len(chunk)
+                if received > limit:
+                    raise DavError(f"{method} {path}: risposta oltre {limit // 1048576} MB (byte ricevuti)")
+                take(decoder.feed(chunk, limit + 1 - len(buf)))
+            take(decoder.feed(b"", limit + 1 - len(buf), final=True))
         finally:
             raw.close()
         hdrs = [(k, v) for k, v in raw.headers.multi_items() if k.lower() not in ("content-encoding", "content-length")]
@@ -218,33 +227,54 @@ def _origin(parts: Any) -> tuple[str, str, int | None]:
     return scheme, (parts.hostname or "").lower(), parts.port or _DEFAULT_PORT.get(scheme)
 
 
-def _decoder(encoding: str) -> Callable[[bytes, int], Iterator[bytes]]:
-    """Decompressione incrementale con tetto: ogni pezzo prodotto è al massimo `room` byte (+64 KB)."""
-    enc = encoding.strip().lower()
-    if enc in ("", "identity"):
-        return lambda chunk, room: iter([chunk])
-    if enc not in ("gzip", "x-gzip", "deflate"):
-        raise DavError(f"Codifica della risposta non supportata: {encoding!r}")
-    state: dict[str, Any] = {"d": zlib.decompressobj(zlib.MAX_WBITS | 32)}  # gzip o zlib, autodetect
+class _Decoder:
+    """Decompressione incrementale con tetto (gzip/deflate, anche concatenate come "gzip, gzip").
 
-    def run(chunk: bytes, room: int) -> Iterator[bytes]:
-        d = state["d"]
-        data = chunk
-        while data:
+    Ogni stadio produce al massimo `room` byte per volta: un pezzo piccolo molto compresso non alloca
+    decine di MB prima del controllo del limite."""
+
+    def __init__(self, encoding: str):
+        encs = [e.strip().lower() for e in encoding.split(",") if e.strip()]
+        encs = [e for e in encs if e != "identity"]
+        for e in encs:
+            if e not in ("gzip", "x-gzip", "deflate"):
+                raise DavError(f"Codifica della risposta non supportata: {encoding!r}")
+        if len(encs) > 3:
+            raise DavError(f"Troppe codifiche concatenate: {encoding!r}")
+        # Content-Encoding elenca le codifiche nell'ordine in cui sono state applicate: si decodifica al contrario
+        self.stages = [{"enc": e, "d": zlib.decompressobj(zlib.MAX_WBITS | 32), "raw": False} for e in reversed(encs)]
+
+    def _run(self, stage: dict[str, Any], data: bytes, room: int, final: bool) -> Iterator[bytes]:
+        step = max(1, min(room, 1 << 20)) + 65536
+        while True:
             try:
-                out = d.decompress(data, max(1, min(room, 1 << 20)) + 65536)
+                out = stage["d"].decompress(data, step)
             except zlib.error:
-                if enc != "deflate" or state.get("raw"):
+                if stage["enc"] != "deflate" or stage["raw"]:
                     raise DavError("Risposta compressa non valida") from None
-                state["d"], state["raw"] = zlib.decompressobj(-zlib.MAX_WBITS), True  # deflate "nudo"
-                d, data = state["d"], chunk
+                stage["d"], stage["raw"] = zlib.decompressobj(-zlib.MAX_WBITS), True  # deflate "nudo"
                 continue
-            yield out
-            room -= len(out)
-            if room <= 0:
-                return
-            data = d.unconsumed_tail
-    return run
+            if out:
+                yield out
+            data = stage["d"].unconsumed_tail
+            if not data and len(out) < step:
+                break
+        if final:
+            tail = stage["d"].flush()
+            if tail:
+                yield tail
+
+    def feed(self, chunk: bytes, room: int, final: bool = False) -> Iterator[bytes]:
+        pieces: Iterator[bytes] = iter([chunk])
+        for stage in self.stages:
+            pieces = self._chain(stage, pieces, room, final)
+        return pieces
+
+    def _chain(self, stage: dict[str, Any], pieces: Iterator[bytes], room: int, final: bool) -> Iterator[bytes]:
+        for p in pieces:  # pigro: lo stadio successivo e il controllo del limite vedono subito ogni pezzo
+            yield from self._run(stage, p, room, False)
+        if final:
+            yield from self._run(stage, b"", room, True)
 
 
 def multiget_xml(ns_root: str, root_name: str, data_ns: str, data_name: str, hrefs: list[str],

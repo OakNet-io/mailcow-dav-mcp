@@ -19,6 +19,7 @@ from typing import Any, Callable
 import anyio
 
 from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import server as _fastmcp_server
 from mcp.types import TextContent, ToolAnnotations
 
 from .bulk import Bulk, default_export_dir
@@ -27,6 +28,10 @@ from .carddav import AddressBooks
 from .config import Settings, _load_dotenv
 from .dav import NS_D, DavClient, DavError
 from .safety import confine_local_files
+
+# FastMCP leggerebbe un .env dalla cartella corrente (variabili FASTMCP_*): un repo aperto nel client non deve
+# poter cambiare la configurazione del server.
+_fastmcp_server.Settings.model_config["env_file"] = None
 
 mcp = FastMCP(
     "mailcow-dav",

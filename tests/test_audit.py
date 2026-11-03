@@ -298,3 +298,45 @@ def test_exceptions_and_respond_scoped_to_uid():
         "DTSTART:20261109T100000Z\r\nSUMMARY:Altro\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
     occ = Calendars(None, PRINCIPAL)._occurrence(cal, "2026-11-09T10:00:00Z", "MINE")
     assert str(occ["uid"]) == "MINE"
+
+
+def test_decoder_flush_chained_and_bomb_in_chain(monkeypatch):
+    import zlib
+    data = b"A" * 2_228_225
+    raw_deflate = zlib.compress(data)[2:-4]
+    dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(raw_deflate),
+                                             headers={"Content-Encoding": "deflate"}))
+    assert len(dav.get("/a/x")[0]) == len(data)
+    twice = gzip.compress(gzip.compress(b"BEGIN:VCARD"))
+    dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(twice),
+                                             headers={"Content-Encoding": "gzip, gzip"}))
+    assert dav.get("/a/x")[0] == "BEGIN:VCARD"
+    monkeypatch.setenv("MAILCOW_DAV_MAX_RESPONSE_MB", "1")
+    bomb = gzip.compress(gzip.compress(b"\0" * (50 * 1024 * 1024)))
+    dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(bomb),
+                                             headers={"Content-Encoding": "gzip, gzip"}))
+    with pytest.raises(DavError, match="oltre"):
+        dav.get("/a/x")
+
+
+def test_rrule_with_utc_until_on_aware_start_and_slow_rule():
+    ev = Event()
+    apply_event_fields(ev, TZ, start="2026-11-03T12:00", rrule="FREQ=DAILY;UNTIL=20261110T110000Z")
+    assert ev.get("rrule") is not None
+    import time as _t
+    t0 = _t.monotonic()
+    with pytest.raises(ValueError):
+        apply_event_fields(Event(), TZ, start="2026-01-01T00:00", rrule="FREQ=HOURLY;BYMONTH=2;BYMONTHDAY=30")
+    assert _t.monotonic() - t0 < 5
+
+
+def test_fastmcp_ignores_cwd_dotenv():
+    from mcp.server.fastmcp import server as fs
+    assert fs.Settings.model_config["env_file"] is None
+
+
+def test_csv_field_cap(tmp_path):
+    f = tmp_path / "in.csv"
+    f.write_text("fn,emails\nMario," + " | ".join(f"m{i}@example.com" for i in range(2000)) + "\n")
+    with pytest.raises(ValueError, match="troppi campi"):
+        Bulk(None)._load(str(f))
