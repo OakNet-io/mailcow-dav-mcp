@@ -1,4 +1,4 @@
-"""Client WebDAV minimale (PROPFIND / REPORT / GET / PUT / DELETE) su httpx + lxml."""
+"""Minimal WebDAV client (PROPFIND / REPORT / GET / PUT / DELETE) on httpx + lxml."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class NotFound(DavError):
 
 
 class PreconditionFailed(DavError):
-    """ETag non corrispondente: la risorsa è cambiata nel frattempo."""
+    """ETag mismatch: the resource changed in the meantime."""
 
 
 @dataclass
@@ -59,7 +59,7 @@ class Resource:
 
     @property
     def name(self) -> str:
-        """Ultimo segmento del path (senza slash finale)."""
+        """Last path segment (without trailing slash)."""
         return unquote(self.href.rstrip("/").rsplit("/", 1)[-1])
 
 
@@ -80,22 +80,22 @@ class DavClient:
 
     @staticmethod
     def safe_path(path: str) -> str:
-        """Solo un path assoluto sul server configurato: niente URL completi (porterebbero le credenziali Basic
-        verso un altro host), niente '//' iniziale, niente segmenti '..' (anche codificati)."""
+        """Only an absolute path on the configured server: no full URLs (they would send the Basic credentials
+        to another host), no leading '//', no '..' segments (encoded ones included)."""
         if not path.startswith("/") or path.startswith("//") or "\\" in path:
-            raise DavError(f"Path DAV non valido: {path!r}")
+            raise DavError(f"Invalid DAV path: {path!r}")
         segments = unquote(path).split("/")
         if any(seg in ("..", ".") for seg in segments) or any(ord(c) < 32 for c in unquote(path)):
-            raise DavError(f"Path DAV non valido: {path!r}")
+            raise DavError(f"Invalid DAV path: {path!r}")
         return path
 
     def _href_path(self, raw: str) -> str:
-        """href restituito dal server → path locale. Un href assoluto è accettato solo se punta allo stesso
-        schema/host/porta della configurazione; altrimenti è un errore (server o proxy ostile)."""
+        """href returned by the server → local path. An absolute href is accepted only if it points to the same
+        scheme/host/port as the configuration; otherwise it is an error (hostile server or proxy)."""
         parts = urlsplit(raw)
         if parts.scheme or parts.netloc:
             if _origin(parts) != self._origin:
-                raise DavError(f"Risposta DAV con href verso un altro host: {raw!r}")
+                raise DavError(f"DAV response with href pointing to another host: {raw!r}")
         return self.safe_path(parts.path or "/")
 
     @staticmethod
@@ -109,7 +109,7 @@ class DavClient:
         try:
             return self._request(method, path, req, ok)
         except httpx.TransportError as e:  # DNS, TLS, timeout, connessione chiusa: messaggio leggibile, non traceback
-            raise DavError(f"{method} {path}: server DAV non raggiungibile ({type(e).__name__}: {e or 'nessun dettaglio'})") from None
+            raise DavError(f"{method} {path}: DAV server unreachable ({type(e).__name__}: {e or 'no details'})") from None
 
     def _request(self, method: str, path: str, req: httpx.Request, ok: Iterable[int]) -> httpx.Response:
         raw = self._client.send(req, stream=True)
@@ -117,7 +117,7 @@ class DavClient:
             declared = raw.headers.get("Content-Length")
             limit = max_response()
             if declared and declared.isdigit() and int(declared) > limit:
-                raise DavError(f"{method} {path}: risposta troppo grande ({int(declared) // 1048576} MB, "
+                raise DavError(f"{method} {path}: response too large ({int(declared) // 1048576} MB, "
                                f"max {limit // 1048576} MB: MAILCOW_DAV_MAX_RESPONSE_MB)")
             buf = bytearray()
             decoder = _Decoder(raw.headers.get("Content-Encoding", ""))
@@ -127,13 +127,13 @@ class DavClient:
                 for piece in pieces:
                     buf.extend(piece)
                     if len(buf) > limit:
-                        raise DavError(f"{method} {path}: risposta oltre {limit // 1048576} MB "
+                        raise DavError(f"{method} {path}: response exceeds {limit // 1048576} MB "
                                        "(MAILCOW_DAV_MAX_RESPONSE_MB)")
 
             for chunk in raw.iter_raw():  # decompressione a pezzi limitati: niente picchi di memoria (gzip bomb)
                 received += len(chunk)
                 if received > limit:
-                    raise DavError(f"{method} {path}: risposta oltre {limit // 1048576} MB (byte ricevuti)")
+                    raise DavError(f"{method} {path}: response exceeds {limit // 1048576} MB (bytes received)")
                 take(decoder.feed(chunk, limit + 1 - len(buf)))
             take(decoder.feed(b"", limit + 1 - len(buf), final=True))
         finally:
@@ -143,24 +143,24 @@ class DavClient:
         if r.status_code == 404:
             raise NotFound(f"{method} {path}: 404 Not Found")
         if r.status_code == 412:
-            raise PreconditionFailed(f"{method} {path}: 412 (ETag non corrispondente, risorsa modificata da altri)")
+            raise PreconditionFailed(f"{method} {path}: 412 (ETag mismatch, resource modified by someone else)")
         if r.status_code in (401, 403):
-            raise DavError(f"{method} {path}: {r.status_code} — credenziali errate o app password senza permesso DAV/SOGo")
+            raise DavError(f"{method} {path}: {r.status_code} — wrong credentials or app password without DAV/SOGo permission")
         if r.status_code not in ok:
             snippet = r.text[:300].replace("\n", " ")
             raise DavError(f"{method} {path}: HTTP {r.status_code} {snippet}")
         return r
 
     def parse_multistatus(self, content: bytes, within: str | None = None) -> list[Resource]:
-        """Parsing rigoroso: un XML troncato o malformato è un errore, non un elenco parziale (un backup
-        incompleto non deve sembrare riuscito). Niente entità esterne né accesso alla rete."""
+        """Strict parsing: truncated or malformed XML is an error, not a partial list (an incomplete
+        backup must not look successful). No external entities or network access."""
         parser = etree.XMLParser(recover=False, huge_tree=False, resolve_entities=False, no_network=True)
         try:
             root = etree.fromstring(content, parser=parser)
         except etree.XMLSyntaxError as e:
-            raise DavError(f"Risposta DAV non valida (XML malformato o troncato): {e}") from e
+            raise DavError(f"Invalid DAV response (malformed or truncated XML): {e}") from e
         if root is None or root.tag != f"{{{NS_D}}}multistatus":
-            raise DavError(f"Risposta DAV inattesa: atteso multistatus, ricevuto {getattr(root, 'tag', None)!r}")
+            raise DavError(f"Unexpected DAV response: expected multistatus, got {getattr(root, 'tag', None)!r}")
         out: list[Resource] = []
         for resp in root.iter(f"{{{NS_D}}}response"):
             href_el = resp.find(f"{{{NS_D}}}href")
@@ -168,7 +168,7 @@ class DavClient:
                 continue
             href = self._href_path(href_el.text.strip())
             if within is not None and not self._within(href, within):
-                raise DavError(f"Risposta DAV con href fuori da {within}: {href!r}")
+                raise DavError(f"DAV response with href outside {within}: {href!r}")
             res = Resource(href=href)
             for propstat in resp.findall(f"{{{NS_D}}}propstat"):
                 status = propstat.findtext(f"{{{NS_D}}}status") or ""
@@ -203,22 +203,22 @@ class DavClient:
         return r.text, r.headers.get("ETag")
 
     def put(self, path: str, body: str, content_type: str, *, etag: str | None = None, create: bool = False) -> str | None:
-        """PUT condizionato: `create` usa If-None-Match: *, altrimenti serve l'ETag (If-Match).
+        """Conditional PUT: `create` uses If-None-Match: *, otherwise the ETag is required (If-Match).
 
-        Senza ETag rifiuto la scrittura: sovrascriverei alla cieca eventuali modifiche concorrenti."""
+        Without an ETag the write is refused: it would blindly overwrite any concurrent changes."""
         headers = {"Content-Type": content_type}
         if create:
             headers["If-None-Match"] = "*"
         elif etag:
             headers["If-Match"] = etag
         else:
-            raise DavError(f"PUT {path}: ETag sconosciuto, rifiuto una sovrascrittura non condizionata")
+            raise DavError(f"PUT {path}: unknown ETag, refusing an unconditional overwrite")
         r = self.request("PUT", path, content=body.encode("utf-8"), headers=headers, ok=(200, 201, 204))
         return r.headers.get("ETag")
 
     def delete(self, path: str, *, etag: str | None) -> None:
         if not etag:
-            raise DavError(f"DELETE {path}: ETag sconosciuto, rifiuto una cancellazione non condizionata")
+            raise DavError(f"DELETE {path}: unknown ETag, refusing an unconditional delete")
         self.request("DELETE", path, headers={"If-Match": etag}, ok=(200, 202, 204))
 
     def close(self) -> None:
@@ -234,19 +234,19 @@ def _origin(parts: Any) -> tuple[str, str, int | None]:
 
 
 class _Decoder:
-    """Decompressione incrementale con tetto (gzip/deflate, anche concatenate come "gzip, gzip").
+    """Incremental decompression with a cap (gzip/deflate, also chained as "gzip, gzip").
 
-    Ogni stadio produce al massimo `room` byte per volta: un pezzo piccolo molto compresso non alloca
-    decine di MB prima del controllo del limite."""
+    Each stage produces at most `room` bytes at a time: a small, highly compressed chunk does not allocate
+    tens of MB before the limit check."""
 
     def __init__(self, encoding: str):
         encs = [e.strip().lower() for e in encoding.split(",") if e.strip()]
         encs = [e for e in encs if e != "identity"]
         for e in encs:
             if e not in ("gzip", "x-gzip", "deflate"):
-                raise DavError(f"Codifica della risposta non supportata: {encoding!r}")
+                raise DavError(f"Unsupported response encoding: {encoding!r}")
         if len(encs) > 3:
-            raise DavError(f"Troppe codifiche concatenate: {encoding!r}")
+            raise DavError(f"Too many chained encodings: {encoding!r}")
         # Content-Encoding elenca le codifiche nell'ordine in cui sono state applicate: si decodifica al contrario
         self.stages = [{"enc": e, "d": zlib.decompressobj(zlib.MAX_WBITS | 32), "raw": False, "out": 0}
                        for e in reversed(encs)]
@@ -259,13 +259,13 @@ class _Decoder:
                 out = stage["d"].decompress(data, step)
             except zlib.error:
                 if stage["enc"] != "deflate" or stage["raw"]:
-                    raise DavError("Risposta compressa non valida") from None
+                    raise DavError("Invalid compressed response") from None
                 stage["d"], stage["raw"] = zlib.decompressobj(-zlib.MAX_WBITS), True  # deflate "nudo"
                 continue
             if out:
                 stage["out"] += len(out)  # anche gli stadi intermedi hanno il tetto: niente lavoro nascosto
                 if stage["out"] > self.limit:
-                    raise DavError(f"Risposta compressa oltre {self.limit // 1048576} MB (MAILCOW_DAV_MAX_RESPONSE_MB)")
+                    raise DavError(f"Compressed response exceeds {self.limit // 1048576} MB (MAILCOW_DAV_MAX_RESPONSE_MB)")
                 yield out
             data = stage["d"].unconsumed_tail
             if not data and len(out) < step:
@@ -290,7 +290,7 @@ class _Decoder:
 
 def multiget_xml(ns_root: str, root_name: str, data_ns: str, data_name: str, hrefs: list[str],
                  data_attrs: dict[str, str] | None = None) -> bytes:
-    """Costruisce un addressbook-multiget / calendar-multiget."""
+    """Build an addressbook-multiget / calendar-multiget."""
     root = etree.Element(f"{{{ns_root}}}{root_name}", nsmap=NSMAP)
     prop = etree.SubElement(root, f"{{{NS_D}}}prop")
     etree.SubElement(prop, f"{{{NS_D}}}getetag")

@@ -1,4 +1,4 @@
-"""Controlli di sicurezza condivisi: segmenti di path DAV, file locali, download foto anti-SSRF, ETag."""
+"""Shared security checks: DAV path segments, local files, anti-SSRF photo download, ETag."""
 
 from __future__ import annotations
 
@@ -22,18 +22,18 @@ _COLLECTION_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._@+-]{0,199}$")
 # -- path DAV ---------------------------------------------------------------------
 
 def collection_segment(name: str, kind: str = "collection") -> str:
-    """ID di rubrica/calendario come singolo segmento di path. Solo lettere, cifre e . _ @ + -:
-    niente '/', '%' (traversal codificato), '?', '#', spazi o caratteri di controllo."""
+    """Address book/calendar ID as a single path segment. Only letters, digits and . _ @ + -:
+    no '/', '%' (encoded traversal), '?', '#', spaces or control characters."""
     seg = (name or "").strip().strip("/")
     if not _COLLECTION_RE.match(seg) or ".." in seg:
-        raise ValueError(f"ID {kind} non valido: {name!r} (usa l'id restituito da list_addressbooks/list_calendars)")
+        raise ValueError(f"Invalid {kind} ID: {name!r} (use the id returned by list_addressbooks/list_calendars)")
     return seg
 
 
 def resource_name(uid: str | None) -> str:
-    """Nome risorsa (senza estensione) per una nuova scheda: l'UID se innocuo, altrimenti un UUID nuovo.
+    """Resource name (without extension) for a new card: the UID if harmless, otherwise a new UUID.
 
-    L'UID resta quello originale dentro la scheda; cambia solo il nome del file sul server."""
+    The original UID stays inside the card; only the file name on the server changes."""
     if uid and _SAFE_NAME_RE.match(uid) and ".." not in uid:
         return uid
     return str(uuid.uuid4())
@@ -53,13 +53,13 @@ def norm_etag(etag: str | None) -> str:
 
 
 def check_expected_etag(expected: str | None, current: str | None, what: str) -> None:
-    """Se il chiamante ha passato l'ETag letto in precedenza, la risorsa non deve essere cambiata nel frattempo."""
+    """If the caller passed the previously read ETag, the resource must not have changed in the meantime."""
     from .dav import PreconditionFailed
 
     if expected and norm_etag(expected) != norm_etag(current):
         raise PreconditionFailed(
-            f"{what} è stato modificato da un altro client dopo la tua lettura (etag {expected} → {current}): "
-            "rileggilo e riapplica le modifiche."
+            f"{what} was modified by another client after you read it (etag {expected} → {current}): "
+            "read it again and reapply the changes."
         )
 
 
@@ -69,10 +69,10 @@ _confine_dirs: list[Path] | None = None
 
 
 def confine_local_files(directories: str | Path | list[str | Path] | None) -> None:
-    """Con una o più directory impostate, import/export/foto possono usare solo file al loro interno.
+    """With one or more directories set, import/export/photos may only use files inside them.
 
-    Il server lo attiva sempre (stdio e HTTP): un testo malevolo in una nota non deve poter far leggere
-    o caricare sul server DAV un file qualsiasi del computer. None = nessun vincolo (uso come libreria)."""
+    The server always enables it (stdio and HTTP): malicious text in a note must not be able to make it read
+    or upload any file on the computer to the DAV server. None = no restriction (library use)."""
     global _confine_dirs
     if directories is None:
         _confine_dirs = None
@@ -82,12 +82,12 @@ def confine_local_files(directories: str | Path | list[str | Path] | None) -> No
 
 
 def confined_dir() -> Path | None:
-    """Directory principale consentita (base dei path relativi e dell'export), se il confinamento è attivo."""
+    """Main allowed directory (base for relative paths and for exports), if confinement is active."""
     return _confine_dirs[0] if _confine_dirs else None
 
 
 def local_path(raw: str) -> Path:
-    """Risolve un path fornito dall'utente; se è attivo il confinamento lo vincola alle directory consentite."""
+    """Resolve a user-supplied path; if confinement is active, restrict it to the allowed directories."""
     p = Path(os.path.expanduser(raw.strip()))
     if _confine_dirs is None:
         return p
@@ -96,40 +96,40 @@ def local_path(raw: str) -> Path:
     resolved = p.resolve()
     if not any(resolved == d or d in resolved.parents for d in _confine_dirs):
         allowed = ", ".join(str(d) for d in _confine_dirs)
-        raise ValueError(f"Path non consentito: sono accessibili solo i file in {allowed} "
-                         "(aggiungi cartelle con MAILCOW_DAV_LOCAL_DIRS)")
+        raise ValueError(f"Path not allowed: only files in {allowed} are accessible "
+                         "(add folders with MAILCOW_DAV_LOCAL_DIRS)")
     return resolved
 
 
 # -- foto ---------------------------------------------------------------------------
 
 def _check_public_host(host: str, port: int) -> str:
-    """Risolve l'host e ritorna un IP pubblico; rifiuta loopback, LAN, link-local, metadata cloud, ecc."""
+    """Resolve the host and return a public IP; reject loopback, LAN, link-local, cloud metadata, etc."""
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as e:
-        raise ValueError(f"Host foto non risolvibile: {host}") from e
+        raise ValueError(f"Photo host cannot be resolved: {host}") from e
     ips = {info[4][0] for info in infos}
     if not ips:
-        raise ValueError(f"Host foto non risolvibile: {host}")
+        raise ValueError(f"Photo host cannot be resolved: {host}")
     for ip in ips:
         addr = ipaddress.ip_address(ip.split("%", 1)[0])
         if not addr.is_global or addr.is_multicast:
-            raise ValueError(f"URL foto rifiutato: {host} punta a un indirizzo non pubblico ({addr})")
+            raise ValueError(f"Photo URL rejected: {host} points to a non-public address ({addr})")
     return sorted(ips)[0]
 
 
 def fetch_url_limited(url: str, max_bytes: int = PHOTO_MAX, timeout: float = 20.0) -> bytes:
-    """GET http(s) verso soli IP pubblici, redirect verificati uno per uno, corpo letto a blocchi con limite.
+    """http(s) GET to public IPs only, redirects checked one by one, body read in chunks with a limit.
 
-    La connessione va all'IP già verificato (Host e SNI restano quelli originali), così un DNS che cambia
-    risposta tra controllo e connessione (DNS rebinding) non può portare verso la rete interna."""
+    The connection goes to the already-verified IP (Host and SNI stay the original ones), so a DNS that changes
+    its answer between check and connection (DNS rebinding) cannot lead into the internal network."""
     current = url
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for _ in range(_MAX_REDIRECTS + 1):
             parts = urlsplit(current)
             if parts.scheme not in ("http", "https") or not parts.hostname:
-                raise ValueError(f"URL foto non valido: {current}")
+                raise ValueError(f"Invalid photo URL: {current}")
             port = parts.port or (443 if parts.scheme == "https" else 80)
             ip = _check_public_host(parts.hostname, port)
             ip_host = f"[{ip}]" if ":" in ip else ip
@@ -144,7 +144,7 @@ def fetch_url_limited(url: str, max_bytes: int = PHOTO_MAX, timeout: float = 20.
                 if resp.is_redirect:
                     location = resp.headers.get("Location")
                     if not location:
-                        raise ValueError("Redirect senza Location")
+                        raise ValueError("Redirect without Location")
                     current = urljoin(current, location)
                     continue
                 resp.raise_for_status()
@@ -153,7 +153,7 @@ def fetch_url_limited(url: str, max_bytes: int = PHOTO_MAX, timeout: float = 20.
                     raise ValueError(_too_big(int(declared), max_bytes))
                 encoding = resp.headers.get("Content-Encoding", "identity").strip().lower()
                 if encoding not in ("", "identity"):
-                    raise ValueError(f"URL foto rifiutato: risposta compressa ({encoding}) non richiesta")
+                    raise ValueError(f"Photo URL rejected: unrequested compressed response ({encoding})")
                 buf = bytearray()
                 for chunk in resp.iter_raw():
                     buf.extend(chunk)
@@ -162,11 +162,11 @@ def fetch_url_limited(url: str, max_bytes: int = PHOTO_MAX, timeout: float = 20.
                 return bytes(buf)
             finally:
                 resp.close()
-    raise ValueError(f"Troppi redirect per {url}")
+    raise ValueError(f"Too many redirects for {url}")
 
 
 def _too_big(size: int, max_bytes: int) -> str:
-    return f"Immagine troppo grande (>{size // 1024} KB, max {max_bytes // 1024} KB): ridimensionala prima"
+    return f"Image too large (>{size // 1024} KB, max {max_bytes // 1024} KB): resize it first"
 
 
 def decode_data_uri(src: str, max_bytes: int = PHOTO_MAX) -> bytes:
@@ -187,7 +187,7 @@ def decode_data_uri(src: str, max_bytes: int = PHOTO_MAX) -> bytes:
 def read_local_limited(raw: str, max_bytes: int = PHOTO_MAX) -> bytes:
     path = local_path(raw)
     if not path.is_file():
-        raise ValueError(f"File immagine non trovato: {raw}")
+        raise ValueError(f"Image file not found: {raw}")
     size = path.stat().st_size
     if size > max_bytes:
         raise ValueError(_too_big(size, max_bytes))

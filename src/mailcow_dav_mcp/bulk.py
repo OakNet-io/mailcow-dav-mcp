@@ -1,4 +1,4 @@
-"""Import/export in blocco della rubrica: vCard (.vcf) e CSV."""
+"""Bulk import/export of the address book: vCard (.vcf) and CSV."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ COLUMN_ALIASES = {
 
 
 def default_export_dir() -> Path:
-    """MAILCOW_DAV_EXPORT_DIR, altrimenti ~/mailcow-dav-exports (fuori dal pacchetto installato)."""
+    """MAILCOW_DAV_EXPORT_DIR, otherwise ~/mailcow-dav-exports (outside the installed package)."""
     base = os.environ.get("MAILCOW_DAV_EXPORT_DIR") or "~/mailcow-dav-exports"
     return Path(os.path.expanduser(base)).resolve()
 
@@ -71,9 +71,9 @@ def _ensure_dir(p: Path) -> Path:
 
 
 def _write_atomic(out: Path, data: str, overwrite: bool) -> None:
-    """Scrive in un file temporaneo nella stessa directory e lo sposta al posto giusto solo se completo.
+    """Write to a temporary file in the same directory and move it into place only when complete.
 
-    Senza overwrite la destinazione non deve esistere (os.link fallisce se esiste: niente race)."""
+    Without overwrite the destination must not exist (os.link fails if it exists: no race)."""
     fd, tmp = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
@@ -97,7 +97,7 @@ def _join(items: Any) -> str:
 
 
 def _split(raw: str) -> list[str]:
-    """Inverso di _join: separa sulle "|" non precedute da backslash."""
+    """Inverse of _join: split on "|" not preceded by a backslash."""
     items, buf, i = [], [], 0
     while i < len(raw):
         ch = raw[i]
@@ -116,7 +116,7 @@ def _split(raw: str) -> list[str]:
 
 
 def _cell_safe(v: str) -> str:
-    """Neutralizza le formule (CSV injection): '=1+1' → "'=1+1". Reversibile con _cell_unsafe."""
+    """Neutralize formulas (CSV injection): '=1+1' → "'=1+1". Reversible with _cell_unsafe."""
     return "'" + v if v and v.startswith(_FORMULA_START) else v
 
 
@@ -148,7 +148,7 @@ def contact_to_row(c: dict[str, Any]) -> dict[str, str]:
 
 
 def row_to_fields(row: dict[str, str]) -> dict[str, Any]:
-    """Riga CSV → kwargs per apply_fields. Colonne sconosciute ignorate; celle vuote = campo non impostato."""
+    """CSV row → kwargs for apply_fields. Unknown columns are ignored; empty cells = field not set."""
     fields: dict[str, Any] = {}
     for col in CSV_COLUMNS:
         if col == "uid":
@@ -182,10 +182,10 @@ class Bulk:
 
     def export(self, book: str = "personal", fmt: str = "vcf", path: str | None = None,
                overwrite: bool = False) -> dict[str, Any]:
-        """Esporta tutta la rubrica. VCF: copia byte per byte di ogni risorsa (gruppi inclusi). CSV: solo contatti.
+        """Export the whole address book. VCF: byte-for-byte copy of each resource (groups included). CSV: contacts only.
 
-        Senza `path` crea un file nuovo con nome univoco; un file esistente viene sovrascritto solo con
-        overwrite=True. La scrittura è atomica: un export interrotto non lascia backup troncati."""
+        Without `path` it creates a new file with a unique name; an existing file is overwritten only with
+        overwrite=True. The write is atomic: an interrupted export leaves no truncated backups."""
         fmt = fmt.lower().lstrip(".")
         if fmt not in ("vcf", "csv"):
             raise ValueError("format: vcf | csv")
@@ -218,7 +218,7 @@ class Bulk:
                 result["unparsable"] = unparsable
         if missing:
             result["missing"] = missing
-            result["warning"] = f"{len(missing)} risorse elencate dal server non sono state recuperate e mancano dall'export"
+            result["warning"] = f"{len(missing)} resources listed by the server could not be retrieved and are missing from the export"
         out = self._export_target(book, fmt, path)
         _write_atomic(out, payload, overwrite=overwrite)
         result["path"] = str(out)
@@ -231,7 +231,7 @@ class Bulk:
             _ensure_dir(out.parent)
             return out
         base = _ensure_dir(confined_dir() or default_export_dir())
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", book.strip("/")).strip("._") or "rubrica"
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", book.strip("/")).strip("._") or "addressbook"
         stem = f"{safe}-{datetime.now():%Y%m%d-%H%M%S}"
         out = base / f"{stem}.{fmt}"
         n = 1
@@ -243,14 +243,14 @@ class Bulk:
     # -- import --------------------------------------------------------
 
     def preview(self, path: str) -> list[dict[str, Any]]:
-        """Contatti letti dal file (senza scrivere nulla)."""
+        """Contacts read from the file (without writing anything)."""
         return [vcard_to_dict(card) for card in self._load(path)]
 
     def import_file(self, path: str, book: str = "personal", dry_run: bool = True,
                     skip_duplicates: bool = True) -> dict[str, Any]:
-        """Importa in due fasi: prima i contatti, poi i gruppi, con i membri riscritti sugli UID effettivi
-        (contatto già presente → UID esistente; UID già usato → UID nuovo). I membri che non corrispondono
-        a nessun contatto sono segnalati in `unresolved_members`, anche in dry-run."""
+        """Import in two phases: contacts first, then groups, with members rewritten to the actual UIDs
+        (contact already present → existing UID; UID already used → new UID). Members that match
+        no contact are reported in `unresolved_members`, even in dry-run."""
         cards = self._load(path)
         contacts = [c for c in cards if not _is_group(c)]
         groups = [c for c in cards if _is_group(c)]
@@ -271,7 +271,7 @@ class Bulk:
             dup = next((by_email[e] for e in emails if e in by_email), None) or \
                 (by_name.get(fn) if not emails and fn else None)
             if skip_duplicates and dup:
-                skipped.append({"fn": d.get("fn"), "reason": "duplicato (stessa email o stesso nome)", "existing_uid": dup})
+                skipped.append({"fn": d.get("fn"), "reason": "duplicate (same email or same name)", "existing_uid": dup})
                 if orig:
                     uid_map[orig] = dup
                 continue
@@ -353,9 +353,9 @@ class Bulk:
 
     @staticmethod
     def _map_members(card: vobject.base.Component, uid_map: dict[str, str], known: set[str]) -> tuple[list[str], list[str]]:
-        """(valori MEMBER riscritti sugli UID effettivi, membri che non corrispondono a nessun contatto).
+        """(MEMBER values rewritten to the actual UIDs, members that match no contact).
 
-        Solo i riferimenti urn:uuid si riscrivono; gli altri (es. mailto:) restano come sono."""
+        Only urn:uuid references are rewritten; the others (e.g. mailto:) stay as they are."""
         members, missing = [], []
         for m in _members(card):
             raw = str(m.value).strip()
@@ -373,7 +373,7 @@ class Bulk:
         return members, missing
 
     def _merge_group(self, group_uid: str, members: list[str], book: str) -> dict[str, Any]:
-        """Aggiunge i membri mancanti a un gruppo già presente in rubrica (PUT condizionata sull'ETag)."""
+        """Add the missing members to a group already in the address book (PUT conditional on the ETag)."""
         href, card, etag = self.books._find_group(group_uid, book)
         have = {_member_uid(m.value) for m in _members(card)}
         new = [m for m in members if _member_uid(m) not in have]
@@ -405,12 +405,12 @@ class Bulk:
     def _load(self, path: str) -> list[vobject.base.Component]:
         p = local_path(path)
         if not p.is_file():
-            raise ValueError(f"File non trovato: {path}")
+            raise ValueError(f"File not found: {path}")
         with p.open("rb") as fh:  # limite sui byte letti, non solo sulla dimensione dichiarata
             raw = fh.read(_max_import_bytes() + 1)
         if len(raw) > _max_import_bytes():
-            raise ValueError(f"File troppo grande (max {_max_import_bytes() // 1048576} MB: MAILCOW_DAV_MAX_IMPORT_MB); "
-                             "dividilo in più file")
+            raise ValueError(f"File too large (max {_max_import_bytes() // 1048576} MB: MAILCOW_DAV_MAX_IMPORT_MB); "
+                             "split it into several files")
         text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")  # come read_text
         if p.suffix.lower() == ".csv":
             return self._from_csv(text)
@@ -418,12 +418,12 @@ class Bulk:
         for comp in vobject.readComponents(text, ignoreUnreadable=True):
             if comp.name.upper() == "VCARD":
                 if sum(len(v) for v in comp.contents.values()) > _MAX_CARD_FIELDS:
-                    raise ValueError(f"Scheda con troppi campi (max {_MAX_CARD_FIELDS}): file non valido?")
+                    raise ValueError(f"Card with too many fields (max {_MAX_CARD_FIELDS}): invalid file?")
                 cards.append(comp)
                 if len(cards) > _max_import_cards():
                     raise ValueError(_too_many())
         if not cards:
-            raise ValueError("Nessuna vCard trovata nel file")
+            raise ValueError("No vCard found in the file")
         return cards
 
     @staticmethod
@@ -443,12 +443,12 @@ class Bulk:
                 continue
             card = new_vcard(uid=_cell_unsafe((row.get("uid") or "").strip()) or None, **fields)
             if sum(len(v) for v in card.contents.values()) > _MAX_CARD_FIELDS:
-                raise ValueError(f"Riga con troppi campi (max {_MAX_CARD_FIELDS}): file non valido?")
+                raise ValueError(f"Row with too many fields (max {_MAX_CARD_FIELDS}): invalid file?")
             cards.append(card)
             if len(cards) > _max_import_cards():
                 raise ValueError(_too_many())
         if not cards:
-            raise ValueError(f"Nessun contatto nel CSV (colonne riconosciute: {', '.join(CSV_COLUMNS)})")
+            raise ValueError(f"No contacts in the CSV (recognized columns: {', '.join(CSV_COLUMNS)})")
         return cards
 
 
@@ -471,5 +471,5 @@ def _set_members(card: vobject.base.Component, members: list[str]) -> None:
 
 
 def _too_many() -> str:
-    return (f"Troppe schede nel file (max {_max_import_cards()}: MAILCOW_DAV_MAX_IMPORT_CARDS); "
-            "dividilo in più file")
+    return (f"Too many cards in the file (max {_max_import_cards()}: MAILCOW_DAV_MAX_IMPORT_CARDS); "
+            "split it into several files")

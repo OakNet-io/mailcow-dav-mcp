@@ -1,8 +1,8 @@
-"""Genera una VTIMEZONE compatta basata su RRULE (es. 'ultima domenica di marzo') a partire da zoneinfo.
+"""Generate a compact RRULE-based VTIMEZONE (e.g. 'last Sunday of March') from zoneinfo.
 
-Le VTIMEZONE con RDATE espliciti (default di icalendar) vengono interpretate male da alcuni expander;
-la forma con RRULE è quella che producono Apple/Outlook/SOGo ed è universalmente supportata.
-Se le transizioni del fuso non seguono una regola 'N-esima domenica del mese', si ricade sulla VTIMEZONE esplicita.
+VTIMEZONEs with explicit RDATEs (icalendar's default) are misread by some expanders;
+the RRULE form is what Apple/Outlook/SOGo produce and is universally supported.
+If the zone's transitions do not follow an 'Nth Sunday of the month' rule, it falls back to the explicit VTIMEZONE.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def _fmt_offset(td: timedelta) -> str:
 
 
 def _transitions(tz: ZoneInfo, year: int) -> list[tuple[datetime, timedelta, timedelta]]:
-    """Istanti (in ora locale PRIMA della transizione) in cui cambia l'offset, nell'anno dato."""
+    """Instants (in local time BEFORE the transition) at which the offset changes, in the given year."""
     from datetime import timezone as _utc
 
     out = []
@@ -49,7 +49,7 @@ def _transitions(tz: ZoneInfo, year: int) -> list[tuple[datetime, timedelta, tim
 
 
 def _weekday_rule(d: date) -> str | None:
-    """'-1SU' se ultima domenica del mese, '2SU' se seconda, ecc. Solo domeniche/altri giorni fissi."""
+    """'-1SU' if last Sunday of the month, '2SU' if second, etc. Only Sundays/other fixed weekdays."""
     wd = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"][d.weekday()]
     last_day = calendar.monthrange(d.year, d.month)[1]
     if d.day + 7 > last_day:
@@ -62,8 +62,8 @@ _MAX_SCAN_YEARS = 80
 
 
 def _signature(tz: ZoneInfo, year: int) -> tuple | None:
-    """Regola del fuso in un anno: ("fixed", offset) senza DST, oppure le due transizioni come
-    (mese, giorno-settimana, ora locale, offset da, offset a). None se l'anno non segue uno schema semplice."""
+    """Zone rule for a year: ("fixed", offset) without DST, or the two transitions as
+    (month, weekday, local time, offset from, offset to). None if the year does not follow a simple pattern."""
     trans = _transitions(tz, year)
     if not trans:
         return ("fixed", datetime(year, 1, 1, 12, tzinfo=tz).utcoffset())
@@ -73,11 +73,11 @@ def _signature(tz: ZoneInfo, year: int) -> tuple | None:
 
 
 def rrule_vtimezone(tz: ZoneInfo, first_year: int | None = None, last_year: int | None = None) -> Timezone | None:
-    """VTIMEZONE con RRULE se il fuso segue la STESSA regola in tutto [first_year - 1, last_year].
+    """VTIMEZONE with RRULE if the zone follows the SAME rule throughout [first_year - 1, last_year].
 
-    La DTSTART di ogni sotto-componente è la transizione reale dell'anno iniziale (non il 1970): prima di
-    quella data la definizione non pretende di valere. Se la regola cambia nell'intervallo (es. un Paese
-    che ha abolito l'ora legale) ritorna None e si usa la VTIMEZONE esplicita."""
+    The DTSTART of each subcomponent is the real transition of the starting year (not 1970): before that
+    date the definition does not claim to apply. If the rule changes within the range (e.g. a country
+    that abolished daylight saving time) it returns None and the explicit VTIMEZONE is used."""
     this_year = date.today().year
     first_year = first_year or this_year
     last_year = max(last_year or this_year + 1, first_year + 1)
@@ -114,7 +114,7 @@ def rrule_vtimezone(tz: ZoneInfo, first_year: int | None = None, last_year: int 
 
 
 def vtimezone(tz: ZoneInfo, first_date: date | None = None, last_date: date | None = None) -> Timezone:
-    """VTIMEZONE che copre [first_date, last_date] (default: da quest'anno; senza fine, +10 anni)."""
+    """VTIMEZONE covering [first_date, last_date] (default: from this year; with no end, about +30 years)."""
     today = date.today()
     first = first_date or date(today.year, 1, 1)
     last = last_date or date(max(today.year, first.year) + 30, 1, 1)  # serie senza fine: copertura ampia

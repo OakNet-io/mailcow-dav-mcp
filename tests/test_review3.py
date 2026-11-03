@@ -110,9 +110,9 @@ def _single_event_dav():
 def test_occurrence_on_single_event_never_deletes_whole_event():
     dav = _single_event_dav()
     cals = Calendars(dav, PRINCIPAL)
-    with pytest.raises(ValueError, match="non è ricorrente"):
+    with pytest.raises(ValueError, match="is not recurring"):
         cals.delete("E1", occurrence="2030-01-01")
-    with pytest.raises(ValueError, match="non è ricorrente"):
+    with pytest.raises(ValueError, match="is not recurring"):
         cals.update("E1", occurrence="2030-01-01", summary="x")
     assert CAL + "E1.ics" in dav.store and "Singolo" in dav.store[CAL + "E1.ics"][0]
 
@@ -171,7 +171,7 @@ def test_truncated_multistatus_is_an_error():
           b'<D:propstat><D:prop><D:getetag>"1"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status>'
           b'</D:propstat></D:response></D:multistatus>')
     assert len(DavClient("https://dav.example.com", "u", "p").parse_multistatus(ok)) == 1
-    with pytest.raises(DavError, match="malformato"):
+    with pytest.raises(DavError, match="malformed"):
         DavClient("https://dav.example.com", "u", "p").parse_multistatus(ok[:-40])
     with pytest.raises(DavError, match="multistatus"):
         DavClient("https://dav.example.com", "u", "p").parse_multistatus(b'<?xml version="1.0"?><html/>')
@@ -481,7 +481,7 @@ def test_reuid_after_412_updates_every_alias(tmp_path):
 def test_todo_due_start_types_and_order():
     td = Todo()
     td.add("uid", "T9")
-    with pytest.raises(ValueError, match="entrambe"):
+    with pytest.raises(ValueError, match="both"):
         apply_todo_fields(td, TZ, summary="x", start="2026-11-03T10:00", due="2026-11-05")
-    with pytest.raises(ValueError, match="successiva"):
+    with pytest.raises(ValueError, match="must be after start"):
         apply_todo_fields(Todo(), TZ, summary="x", start="2026-11-03T10:00", due="2026-11-03T10:00")

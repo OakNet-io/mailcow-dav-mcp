@@ -377,13 +377,15 @@ riga di continuazione vuota. Contatti di Apple e BusyContacts la uniscono poi al
 
 | Sintomo | Soluzione |
 |---|---|
-| 🚫 `401/403 — credenziali errate…` | Controlla utente e app password. L'app password deve consentire **DAV/SOGo**. |
-| 🔌 `server DAV non raggiungibile (ConnectError…)` | Controlla `MAILCOW_DAV_URL` (nome host, `https://`), DNS e rete o VPN. `ConnectTimeout`: firewall o porta errata. |
-| ❓ `Variabili mancanti: MAILCOW_DAV_URL…` | Il client non passa le variabili: controlla `MAILCOW_DAV_ENV_FILE` (percorso completo, niente `~`). |
+| 🚫 `401/403 — wrong credentials…` | Controlla utente e app password. L'app password deve consentire **DAV/SOGo**. |
+| 🔌 `DAV server unreachable (ConnectError…)` | Controlla `MAILCOW_DAV_URL` (nome host, `https://`), DNS e rete o VPN. `ConnectTimeout`: firewall o porta errata. |
+| ❓ `Missing variables: MAILCOW_DAV_URL…` | Il client non passa le variabili: controlla `MAILCOW_DAV_ENV_FILE` (percorso completo, niente `~`). |
 | 🧩 `spawn uvx ENOENT` (Claude Desktop) | Usa il percorso completo di `uvx` in `command`. |
-| 🔄 `412 … ETag` / "modificato da un altro client" | L'elemento è cambiato dopo la tua lettura. Rileggilo e riprova. |
+| 🔄 `412 … ETag` / "modified by another client" | L'elemento è cambiato dopo la tua lettura. Rileggilo e riprova. |
 | 🌐 HTTP `421 Misdirected Request` | Aggiungi il nome host pubblico a `MAILCOW_DAV_MCP_ALLOWED_HOSTS`. |
 | 🎟️ HTTP `401 unauthorized` | Invia `Authorization: Bearer <MAILCOW_DAV_MCP_TOKEN>`. |
+
+I messaggi del server sono in inglese.
 
 ## 🛠️ Sviluppo
 

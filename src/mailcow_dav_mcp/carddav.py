@@ -1,4 +1,4 @@
-"""Rubrica CardDAV (SOGo)."""
+"""CardDAV address book (SOGo)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ _MULTIGET_BATCH = 100
 
 
 def _split_typed(value: str, default: str) -> tuple[str, str]:
-    """'cell:+39 333...' -> ('CELL', '+39 333...'); senza prefisso usa default."""
+    """'cell:+39 333...' -> ('CELL', '+39 333...'); without a prefix uses default."""
     m = _TYPE_PREFIX.match(value.strip())
     if m:
         t = m.group(1).upper()
@@ -126,18 +126,18 @@ def apply_fields(card: vobject.base.Component, *, fn: str | None = None, given: 
                  department: str | None = None, role: str | None = None, assistant: str | None = None,
                  spouse: str | None = None, anniversary: str | None = None, im: list[str] | None = None,
                  timezone: str | None = None) -> None:
-    """Applica i campi non-None alla vCard. Le liste sostituiscono integralmente quelle esistenti.
+    """Apply the non-None fields to the vCard. Lists fully replace the existing ones.
 
-    additional/prefix/suffix: secondo nome, titolo (Dott., Ing.) e suffisso (Jr.) — componenti di N.
-    department: seconda unità di ORG (come fa SOGo). role: ROLE. im: ["telegram:@nome", "skype:id", "whatsapp:+39..."]
-    → IMPP. assistant/spouse/anniversary: X-ASSISTANT / X-SPOUSE / X-ANNIVERSARY (SOGo li conserva ma non li mostra).
+    additional/prefix/suffix: middle name, title (Dr., Eng.) and suffix (Jr.) — components of N.
+    department: second unit of ORG (as SOGo does). role: ROLE. im: ["telegram:@name", "skype:id", "whatsapp:+39..."]
+    → IMPP. assistant/spouse/anniversary: X-ASSISTANT / X-SPOUSE / X-ANNIVERSARY (SOGo keeps them but does not show them).
 
-    categories: tag SOGo (es. ["Cliente", "VIP"]); [] li rimuove tutti.
-    photo: URL http(s), data-URI o path di file locale (jpg/png/gif/webp); viene scaricata/letta e incorporata
-    in base64. "" rimuove la foto.
+    categories: SOGo tags (e.g. ["Client", "VIP"]); [] removes them all.
+    photo: http(s) URL, data-URI or local file path (jpg/png/gif/webp); it is downloaded/read and embedded
+    in base64. "" removes the photo.
 
-    addresses: lista di stringhe "tipo:via;città;provincia;cap;paese" (tipo opzionale, default WORK).
-    I campi vuoti si lasciano vuoti, es. "work:Via Roma 1;Milano;MI;20100;IT" oppure "home:Via Roma 1;Milano;;20100;".
+    addresses: list of strings "type:street;city;region;postcode;country" (type optional, default WORK).
+    Leave empty fields empty, e.g. "work:Via Roma 1;Milano;MI;20100;IT" or "home:Via Roma 1;Milano;;20100;".
     """
 
     def set_single(name: str, value: str | None) -> None:
@@ -259,7 +259,7 @@ def apply_fields(card: vobject.base.Component, *, fn: str | None = None, given: 
             derived = " ".join(card.org.value)
         if getattr(card, "fn", None) is None:
             card.add("fn")
-        card.fn.value = derived or "Senza nome"
+        card.fn.value = derived or "Unnamed"
 
 
 _PHOTO_MAX = PHOTO_MAX
@@ -275,15 +275,15 @@ def _sniff_mime(data: bytes) -> str:
         return "image/gif"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
-    raise ValueError("Formato immagine non riconosciuto (accetto JPEG, PNG, GIF, WebP)")
+    raise ValueError("Unrecognized image format (accepted: JPEG, PNG, GIF, WebP)")
 
 
 def load_photo(source: str, *, allow_local: bool = True) -> tuple[bytes, str]:
-    """Ritorna (bytes, tipo vCard es. 'JPEG') da URL http(s), data-URI o path locale (max 2 MB).
+    """Return (bytes, vCard type e.g. 'JPEG') from an http(s) URL, data-URI or local path (max 2 MB).
 
-    Gli URL passano da fetch_url_limited (solo IP pubblici, limite di byte durante il download).
-    `allow_local=False` per valori che arrivano dal server DAV: una PHOTO;VALUE=URI:/percorso/locale
-    non deve far leggere file dal computer su cui gira il server MCP."""
+    URLs go through fetch_url_limited (public IPs only, byte limit during the download).
+    `allow_local=False` for values coming from the DAV server: a PHOTO;VALUE=URI:/local/path
+    must not make it read files from the computer the MCP server runs on."""
     src = source.strip()
     if src.startswith("data:"):
         data = decode_data_uri(src, _PHOTO_MAX)
@@ -292,16 +292,16 @@ def load_photo(source: str, *, allow_local: bool = True) -> tuple[bytes, str]:
     elif allow_local:
         data = read_local_limited(src, _PHOTO_MAX)
     else:
-        raise ValueError("Foto non incorporata con riferimento non supportato (accetto solo URL http(s) o data-URI)")
+        raise ValueError("Non-embedded photo with an unsupported reference (only http(s) URLs or data-URIs are accepted)")
     return data, _MIME_TO_VCARD[_sniff_mime(data)]
 
 
 def serialize_vcard(card: vobject.base.Component) -> str:
-    """Serializza una vCard con folding RFC 6350 corretto.
+    """Serialize a vCard with correct RFC 6350 folding.
 
-    vobject, quando una riga è lunga esattamente il limite, emette una riga di continuazione vuota ("\\r\\n \\r\\n"):
-    Contatti di macOS/iOS la unfolda incollando la riga successiva (es. "IT" + "CATEGORIES:..."). Qui unfoldo
-    l'output di vobject e ripiego a 75 ottetti senza mai produrre continuazioni vuote.
+    When a line is exactly at the limit, vobject emits an empty continuation line ("\\r\\n \\r\\n"):
+    macOS/iOS Contacts unfolds it by gluing the next line on (e.g. "IT" + "CATEGORIES:..."). Here vobject's
+    output is unfolded and refolded at 75 octets without ever producing empty continuations.
     """
     raw = card.serialize()
     unfolded = re.sub(r"\r?\n[ \t]", "", raw)
@@ -342,7 +342,7 @@ class AddressBooks:
         self._lock = threading.Lock()
 
     def book_path(self, book: str) -> str:
-        return f"{self.root}{collection_segment(book, 'rubrica')}/"
+        return f"{self.root}{collection_segment(book, 'address book')}/"
 
     def list(self) -> list[dict[str, Any]]:
         res = self.dav.propfind(self.root, [(NS_D, "displayname"), (NS_D, "resourcetype"), (NS_CS, "getctag")], depth=1)
@@ -357,10 +357,10 @@ class AddressBooks:
     # -- lettura ---------------------------------------------------------
 
     def _scan(self, book: str, stop_after: int | None = None) -> list[tuple[str, str, Any]]:
-        """Indice della rubrica: [(href, kind, data)] in ordine di elenco; kind = contact | group | bad.
+        """Address book index: [(href, kind, data)] in listing order; kind = contact | group | bad.
 
-        Le schede si scaricano solo se l'ETag è cambiato dall'ultima scansione (cache per rubrica), così una
-        ricerca non riscarica ogni volta tutte le foto. Con `stop_after` si ferma appena ha quel numero di contatti."""
+        Cards are downloaded only if the ETag changed since the last scan (per-address-book cache), so a
+        search does not re-download every photo each time. With `stop_after` it stops as soon as it has that many contacts."""
         path = self.book_path(book)
         listing = self.dav.propfind(path, [(NS_D, "getetag"), (NS_D, "getcontenttype"), (NS_D, "resourcetype")], depth=1)
         items = [(r.href, r.etag) for r in listing
@@ -396,10 +396,10 @@ class AddressBooks:
             return out
 
     def all(self, book: str = "personal", limit: int | None = 500, category: str | None = None) -> list[dict[str, Any]]:
-        """Tutti i contatti della rubrica (gruppi esclusi). `limit=None` = nessun limite.
+        """All contacts in the address book (groups excluded). `limit=None` = no limit.
 
-        Il limite conta solo i contatti (i gruppi non lo consumano). Con `category` il filtro è applicato
-        prima del limite, altrimenti un tag presente solo su contatti oltre i primi `limit` risulterebbe vuoto."""
+        The limit counts only contacts (groups do not consume it). With `category` the filter is applied
+        before the limit, otherwise a tag present only on contacts beyond the first `limit` would come back empty."""
         entries = self._scan(book, stop_after=limit if limit is not None and not category else None)
         results = [dict(data) for _, kind, data in entries if kind == "contact"]
         if category:
@@ -407,12 +407,12 @@ class AddressBooks:
         return results if limit is None else results[:limit]
 
     def search(self, query: str, book: str = "personal", limit: int = 50, category: str | None = None) -> list[dict[str, Any]]:
-        """Cerca per nome/nickname/email/telefono/azienda/note… su TUTTA la rubrica, lato client.
+        """Search by name/nickname/email/phone/company/notes… across the WHOLE address book, client-side.
 
-        Non uso `addressbook-query`: SOGo lo applica solo ad alcuni campi indicizzati e in modo
-        non documentato (il cognome viene trovato, il nome di battesimo sullo stesso FN no; il filtro
-        NICKNAME è ignorato e restituisce tutto), quindi un risultato non vuoto non è affidabile. Ogni parola della
-        query deve comparire nel contatto, ignorando maiuscole e accenti."""
+        `addressbook-query` is not used: SOGo applies it only to some indexed fields and in an
+        undocumented way (the surname is found, the first name in the same FN is not; the
+        NICKNAME filter is ignored and returns everything), so a non-empty result is not reliable. Every word of the
+        query must appear in the contact, ignoring case and accents."""
         terms = _norm(query).split()
         if not terms:
             return []
@@ -421,9 +421,9 @@ class AddressBooks:
         return results[:limit]
 
     def _find_href(self, uid: str, book: str) -> tuple[str, str, str | None]:
-        """Ritorna (href, vcard_text, etag). Prova {uid}.vcf, poi query su UID, poi l'indice della rubrica.
+        """Return (href, vcard_text, etag). Tries {uid}.vcf, then a query on UID, then the address book index.
 
-        L'UID si confronta in modo esatto: "ABC" e "abc" sono schede diverse."""
+        The UID is compared exactly: "ABC" and "abc" are different cards."""
         path = self.book_path(book)
         if is_safe_name(uid):
             direct = f"{path}{uid}.vcf"
@@ -453,19 +453,19 @@ class AddressBooks:
                 text, etag = self.dav.get(href)  # contenuto fresco, non quello in cache
                 if _card_uid(text) == uid:
                     return href, text, etag
-        raise NotFound(f"Contatto con UID {uid!r} non trovato in {book!r}")
+        raise NotFound(f"Contact with UID {uid!r} not found in {book!r}")
 
     def _with_etag(self, href: str, text: str, etag: str | None) -> tuple[str, str, str | None]:
-        """Se il REPORT non ha dato l'ETag, rileggo contenuto ed ETag insieme con un GET (coerenti tra loro).
+        """If the REPORT did not return the ETag, re-read content and ETag together with a GET (consistent with each other).
 
-        Se nel frattempo la risorsa contiene un'altra scheda (UID diverso), mi fermo: l'ETag nuovo
-        autorizzerebbe una modifica o cancellazione sulla scheda sbagliata."""
+        If the resource now contains another card (different UID), stop: the new ETag
+        would authorize a change or delete on the wrong card."""
         if etag:
             return href, text, etag
         expected = _card_uid(text)
         fresh, etag = self.dav.get(href)
         if _card_uid(fresh) != expected:
-            raise PreconditionFailed(f"La scheda {expected!r} è stata sostituita da un altro client: riprova")
+            raise PreconditionFailed(f"Card {expected!r} was replaced by another client: try again")
         return href, fresh, etag
 
     def get(self, uid: str, book: str = "personal") -> dict[str, Any]:
@@ -473,8 +473,8 @@ class AddressBooks:
         return vcard_to_dict(vobject.readOne(text), href=href, etag=etag)
 
     def photo(self, uid: str, book: str = "personal", fetch_url: bool = False) -> tuple[bytes, str] | str | None:
-        """(bytes, mime) della foto incorporata, None se manca. Una foto per URL viene scaricata solo con
-        fetch_url=True (altrimenti ritorna l'URL): scaricarla rivela a quel sito IP e momento dell'accesso."""
+        """(bytes, mime) of the embedded photo, None if missing. A photo by URL is downloaded only with
+        fetch_url=True (otherwise the URL is returned): downloading it reveals IP and access time to that site."""
         _, text, _ = self._find_href(uid, book)
         card = vobject.readOne(text)
         ph = getattr(card, "photo", None)
@@ -482,7 +482,7 @@ class AddressBooks:
             return None
         if isinstance(ph.value, (bytes, bytearray)):
             if len(ph.value) > PHOTO_MAX:
-                raise ValueError(f"Foto incorporata troppo grande ({len(ph.value) // 1024} KB, max {PHOTO_MAX // 1024} KB)")
+                raise ValueError(f"Embedded photo too large ({len(ph.value) // 1024} KB, max {PHOTO_MAX // 1024} KB)")
             return bytes(ph.value), _sniff_mime(bytes(ph.value))
         value = str(ph.value).strip()
         if value.startswith("data:"):
@@ -494,7 +494,7 @@ class AddressBooks:
         return data, _sniff_mime(data)
 
     def categories(self, book: str = "personal") -> dict[str, int]:
-        """Tag usati nella rubrica con conteggio contatti."""
+        """Tags used in the address book with contact counts."""
         counts: dict[str, int] = {}
         for c in self.all(book, limit=None):
             for tag in c.get("categories", []):
@@ -510,18 +510,18 @@ class AddressBooks:
         return self._with_fold_warning(vcard_to_dict(card, href=href, etag=etag), href)
 
     def update(self, uid: str, book: str = "personal", expected_etag: str | None = None, **fields: Any) -> dict[str, Any]:
-        """`expected_etag`: l'etag della lettura su cui il chiamante ha basato le modifiche (consigliato
-        quando si sostituiscono liste): se nel frattempo il contatto è cambiato, l'update fallisce invece
-        di cancellare in silenzio le modifiche altrui."""
+        """`expected_etag`: the etag of the read the caller based the changes on (recommended
+        when replacing lists): if the contact changed in the meantime, the update fails instead
+        of silently wiping out someone else's changes."""
         href, text, etag = self._find_href(uid, book)
-        check_expected_etag(expected_etag, etag, f"Il contatto {uid}")
+        check_expected_etag(expected_etag, etag, f"Contact {uid}")
         card = vobject.readOne(text)
         apply_fields(card, **fields)
         new_etag = self.dav.put(href, serialize_vcard(card), "text/vcard; charset=utf-8", etag=etag)
         return self._with_fold_warning(vcard_to_dict(card, href=href, etag=new_etag), href)
 
     def _with_fold_warning(self, result: dict[str, Any], href: str) -> dict[str, Any]:
-        """Rilegge la vCard come l'ha salvata SOGo e segnala il bug di folding (vedi sogo_fold_problems)."""
+        """Re-read the vCard as SOGo saved it and report the folding bug (see sogo_fold_problems)."""
         try:
             text, _ = self.dav.get(href)
         except Exception:
@@ -529,15 +529,15 @@ class AddressBooks:
         bad = sogo_fold_problems(text)
         if bad:
             result["warning"] = (
-                "Bug di folding SOGo: la riga " + "; ".join(bad) +
-                " è lunga esattamente 75 (o 149, 223…) caratteri e SOGo la salva con una continuazione vuota; "
-                "i client Apple/BusyContacts la mostrano incollata al campo successivo. "
-                "Cambia la lunghezza del campo (es. 'Italia' invece di 'IT', o una parola in più nella nota)."
+                "SOGo folding bug: the line " + "; ".join(bad) +
+                " is exactly 75 (or 149, 223…) characters long and SOGo saves it with an empty continuation; "
+                "Apple/BusyContacts clients show it glued to the next field. "
+                "Change the field length (e.g. 'Italia' instead of 'IT', or one more word in the note)."
             )
         return result
 
     def fold_problems(self, book: str = "personal") -> list[dict[str, Any]]:
-        """Contatti della rubrica affetti dal bug di folding SOGo, con le righe incriminate."""
+        """Contacts in the address book affected by the SOGo folding bug, with the offending lines."""
         out = []
         for href, text, _ in self._raw_all(book):
             bad = sogo_fold_problems(text)
@@ -548,18 +548,18 @@ class AddressBooks:
 
     def delete(self, uid: str, book: str = "personal", expected_etag: str | None = None) -> dict[str, Any]:
         href, _, etag = self._find_href(uid, book)
-        check_expected_etag(expected_etag, etag, f"Il contatto {uid}")
+        check_expected_etag(expected_etag, etag, f"Contact {uid}")
         self.dav.delete(href, etag=etag)
         return {"deleted": True, "uid": uid, "href": href}
 
     # -- gruppi (vCard con X-ADDRESSBOOKSERVER-KIND:group, formato Apple/SOGo/BusyContacts) --
 
     def _raw_all(self, book: str) -> list[tuple[str, str, str | None]]:
-        """Tutte le risorse della rubrica come (href, vcard_text, etag), gruppi inclusi."""
+        """All resources of the address book as (href, vcard_text, etag), groups included."""
         return self.raw_resources(book)[0]
 
     def raw_resources(self, book: str) -> tuple[list[tuple[str, str, str | None]], list[str]]:
-        """(risorse recuperate, href elencati ma non restituiti dal multiget né da un GET singolo)."""
+        """(retrieved resources, hrefs listed but returned neither by the multiget nor by a single GET)."""
         path = self.book_path(book)
         listing = self.dav.propfind(path, [(NS_D, "getetag"), (NS_D, "resourcetype")], depth=1)
         hrefs = [r.href for r in listing
@@ -586,23 +586,23 @@ class AddressBooks:
         return out, missing
 
     def groups(self, book: str = "personal") -> list[dict[str, Any]]:
-        """Elenca i gruppi: uid, name, members (lista di UID contatto), href."""
+        """List groups: uid, name, members (list of contact UIDs), href."""
         out = [dict(data) for _, kind, data in self._scan(book) if kind == "group"]
         return sorted(out, key=lambda g: g["name"].lower())
 
     def _find_group(self, group: str, book: str) -> tuple[str, vobject.base.Component, str | None]:
-        """group = UID (esatto) oppure nome (senza distinzione di maiuscole). Ritorna (href, card, etag) freschi."""
+        """group = UID (exact) or name (case-insensitive). Returns fresh (href, card, etag)."""
         q = group.strip()
         found = [(h, d) for h, kind, d in self._scan(book) if kind == "group"]
         hit = next(((h, d) for h, d in found if d.get("uid") == q), None) or \
             next(((h, d) for h, d in found if d.get("name", "").strip().lower() == q.lower()), None)
         if hit is None:
-            raise NotFound(f"Gruppo {group!r} non trovato in {book!r}")
+            raise NotFound(f"Group {group!r} not found in {book!r}")
         href, info = hit
         text, etag = self.dav.get(href)  # la cache serve a trovarlo; per modificarlo rileggo contenuto ed ETag
         card = vobject.readOne(text)
         if not _is_group(card) or _card_uid(text) != info.get("uid"):
-            raise PreconditionFailed(f"Il gruppo {group!r} è stato sostituito da un altro client: riprova")
+            raise PreconditionFailed(f"Group {group!r} was replaced by another client: try again")
         return href, card, etag
 
     def create_group(self, name: str, book: str = "personal") -> dict[str, Any]:
@@ -617,7 +617,7 @@ class AddressBooks:
         return _group_to_dict(card, href, etag)
 
     def add_to_group(self, uid: str, group: str, book: str = "personal", create: bool = False) -> dict[str, Any]:
-        """Aggiunge il contatto `uid` al gruppo (per nome o UID). Con create=True lo crea se manca."""
+        """Add contact `uid` to the group (by name or UID). With create=True the group is created if missing."""
         self._find_href(uid, book)  # verifica che il contatto esista
         try:
             href, card, etag = self._find_group(group, book)
@@ -650,9 +650,9 @@ _EMPTY_FOLD_RE = re.compile(r"^([^\r\n]+)\r?\n[ \t]\r?\n(?=[^ \t\r\n])", re.M)
 
 
 def sogo_fold_problems(text: str) -> list[str]:
-    """Righe seguite da una continuazione vuota (bug di folding SOGo: riga lunga 75, 149, 223… ottetti).
+    """Lines followed by an empty continuation (SOGo folding bug: line 75, 149, 223… octets long).
 
-    Ritorna il nome della proprietà + inizio del valore per ogni riga affetta, [] se la vCard è pulita.
+    Returns the property name + start of the value for each affected line, [] if the vCard is clean.
     """
     out = []
     for m in _EMPTY_FOLD_RE.finditer(text):
@@ -666,21 +666,21 @@ _UID_RE = re.compile(r"^UID(?:;[^:]*)?:(.+?)\r?$", re.M | re.I)
 
 
 def _card_uid(text: str) -> str:
-    """UID (così com'è, case-sensitive) dal testo di una vCard, senza parsarla per intero. '' se assente.
+    """UID (as is, case-sensitive) from a vCard's text, without parsing it fully. '' if absent.
 
-    Unfolding prima della regex: un UID lungo è ripiegato su più righe fisiche."""
+    Unfolding before the regex: a long UID is folded over several physical lines."""
     m = _UID_RE.search(re.sub(r"\r?\n[ \t]", "", text))
     return m.group(1).strip() if m else ""
 
 
 def _member_uid(value: Any) -> str:
-    """'urn:uuid:ABC' → 'ABC' (prefisso senza distinzione di maiuscole, UID esatto)."""
+    """'urn:uuid:ABC' → 'ABC' (case-insensitive prefix, exact UID)."""
     v = str(value).strip()
     return v[9:] if v.lower().startswith("urn:uuid:") else v
 
 
 def _classify(text: str, href: str, etag: str | None) -> tuple[str, Any]:
-    """(kind, dati) per l'indice della rubrica: contatto, gruppo o scheda illeggibile."""
+    """(kind, data) for the address book index: contact, group or unreadable card."""
     try:
         card = vobject.readOne(text)
     except Exception:
@@ -738,13 +738,13 @@ def _flat(contact: dict[str, Any]) -> str:
 
 
 def _norm(text: str) -> str:
-    """Minuscolo e senza accenti: 'Niccolò' -> 'niccolo'."""
+    """Lowercase and without accents: 'Niccolò' -> 'niccolo'."""
     decomposed = unicodedata.normalize("NFKD", text)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
 
 def _matches(contact: dict[str, Any], terms: list[str]) -> bool:
-    """Ogni termine deve comparire nel contatto; i numeri valgono anche ignorando spazi/trattini dei telefoni."""
+    """Every term must appear in the contact; numbers also match ignoring spaces/dashes in phone numbers."""
     hay = _norm(_flat(contact))
     phones = [re.sub(r"\D", "", p.get("value", "")) for p in contact.get("phones", [])]
     return all(t in hay or _digits_in_phones(t, phones) for t in terms)

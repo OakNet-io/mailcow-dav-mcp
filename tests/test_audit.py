@@ -41,7 +41,7 @@ def test_foreign_or_escaping_href_rejected():
     for bad in ("https://attacker.example/x.vcf", "//attacker.example/x", "/a/../../etc/x", "/a/%2e%2e/x"):
         with pytest.raises(DavError):
             dav.parse_multistatus(_ms(bad))
-    with pytest.raises(DavError, match="fuori"):
+    with pytest.raises(DavError, match="outside"):
         dav.parse_multistatus(_ms("/SOGo/dav/other/Contacts/personal/x.vcf"), within=PRINCIPAL + "Contacts/personal/")
 
 
@@ -116,7 +116,7 @@ def test_dav_response_size_capped_after_decompression(monkeypatch):
     monkeypatch.setenv("MAILCOW_DAV_MAX_RESPONSE_MB", "1")
     bomb = gzip.compress(b"A" * (3 * 1024 * 1024))
     dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(bomb), headers={"Content-Encoding": "gzip"}))
-    with pytest.raises(DavError, match="oltre"):
+    with pytest.raises(DavError, match="exceeds"):
         dav.get("/a/x.vcf")
     small = gzip.compress(b"BEGIN:VCARD")
     dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(small),
@@ -130,10 +130,10 @@ def test_import_limits(tmp_path, monkeypatch):
     monkeypatch.setenv("MAILCOW_DAV_MAX_IMPORT_CARDS", "2")
     f = tmp_path / "in.vcf"
     f.write_text("".join(serialize_vcard(new_vcard(uid=f"U{i}", fn=f"N{i}")) for i in range(3)), encoding="utf-8")
-    with pytest.raises(ValueError, match="Troppe"):
+    with pytest.raises(ValueError, match="Too many"):
         Bulk(None)._load(str(f))
     monkeypatch.setenv("MAILCOW_DAV_MAX_IMPORT_MB", "0")
-    with pytest.raises(ValueError, match="grande"):
+    with pytest.raises(ValueError, match="too large"):
         Bulk(None)._load(str(f))
 
 
@@ -171,7 +171,7 @@ def test_dotenv_only_explicit_file_and_prefixed_keys(tmp_path, monkeypatch):
     _load_dotenv()
     assert os.environ["MAILCOW_DAV_USER"] == "ok" and "HTTPS_PROXY" not in os.environ
     monkeypatch.setenv("MAILCOW_DAV_ENV_FILE", str(tmp_path / "missing.env"))
-    with pytest.raises(RuntimeError, match="inesistente"):
+    with pytest.raises(RuntimeError, match="non-existent"):
         _load_dotenv()
 
 
@@ -187,7 +187,7 @@ def test_stdio_confines_local_files(tmp_path, monkeypatch):
         server._confine()
         assert safety.local_path(str(extra / "a.png")) == (extra / "a.png").resolve()
         assert safety.local_path("x.vcf") == (allowed / "x.vcf").resolve()
-        with pytest.raises(ValueError, match="non consentito"):
+        with pytest.raises(ValueError, match="not allowed"):
             safety.local_path(str(tmp_path / "secret.png"))
     finally:
         safety.confine_local_files(None)
@@ -214,7 +214,7 @@ def test_photo_url_not_fetched_by_default_and_embedded_capped(monkeypatch):
     big.add("photo").value = b"\xff\xd8" + b"0" * 100
     big.photo.params["ENCODING"] = ["b"]
     books.dav.text = serialize_vcard(big)
-    with pytest.raises(ValueError, match="troppo grande"):
+    with pytest.raises(ValueError, match="too large"):
         books.photo("P1")
 
 
@@ -285,7 +285,7 @@ def test_vtimezone_for_far_future_event():
 
 
 def test_impossible_rrule_rejected_on_write():
-    with pytest.raises(ValueError, match="nessuna occorrenza"):
+    with pytest.raises(ValueError, match="no occurrence"):
         apply_event_fields(Event(), TZ, start="2026-01-01T10:00", rrule="FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30")
 
 
@@ -315,7 +315,7 @@ def test_decoder_flush_chained_and_bomb_in_chain(monkeypatch):
     bomb = gzip.compress(gzip.compress(b"\0" * (50 * 1024 * 1024)))
     dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(bomb),
                                              headers={"Content-Encoding": "gzip, gzip"}))
-    with pytest.raises(DavError, match="oltre"):
+    with pytest.raises(DavError, match="exceeds"):
         dav.get("/a/x")
 
 
@@ -338,7 +338,7 @@ def test_fastmcp_ignores_cwd_dotenv():
 def test_csv_field_cap(tmp_path):
     f = tmp_path / "in.csv"
     f.write_text("fn,emails\nMario," + " | ".join(f"m{i}@example.com" for i in range(2000)) + "\n")
-    with pytest.raises(ValueError, match="troppi campi"):
+    with pytest.raises(ValueError, match="too many fields"):
         Bulk(None)._load(str(f))
 
 
@@ -358,7 +358,7 @@ def test_intermediate_stage_capped(monkeypatch):
     body = gzip.compress(inner.getvalue())
     dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(body),
                                              headers={"Content-Encoding": "gzip, gzip"}))
-    with pytest.raises(DavError, match="oltre"):
+    with pytest.raises(DavError, match="exceeds"):
         dav.get("/a/x")
 
 
@@ -368,21 +368,21 @@ def test_transport_error_becomes_dav_error():
     def down(req):
         raise httpx.ConnectError("nodename nor servname provided", request=req)
 
-    with pytest.raises(DavError, match="non raggiungibile") as exc:
+    with pytest.raises(DavError, match="unreachable") as exc:
         _client(down).get("/a/1.vcf")
     assert "secret" not in str(exc.value)
 
 
 def test_check_prints_one_line_on_network_error(monkeypatch, capsys):
     def boom():
-        raise DavError("PROPFIND /x: server DAV non raggiungibile (ConnectError: boom)")
+        raise DavError("PROPFIND /x: DAV server unreachable (ConnectError: boom)")
 
     monkeypatch.setattr(server, "dav_status", boom)
     with pytest.raises(SystemExit) as code:
         server._check()
     assert code.value.code == 2
     err = capsys.readouterr().err
-    assert err.startswith("ERRORE DAV:") and "Traceback" not in err
+    assert err.startswith("DAV ERROR:") and "Traceback" not in err
 
     monkeypatch.setattr(server, "dav_status", lambda: (_ for _ in ()).throw(ValueError("bad url")))
     with pytest.raises(SystemExit) as code:

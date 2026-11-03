@@ -1,4 +1,4 @@
-"""Configurazione da variabili d'ambiente (o da un file .env indicato da MAILCOW_DAV_ENV_FILE)."""
+"""Configuration from environment variables (or from a .env file pointed to by MAILCOW_DAV_ENV_FILE)."""
 
 from __future__ import annotations
 
@@ -8,21 +8,21 @@ from pathlib import Path
 
 
 def _project_env() -> Path:
-    """Il .env nella cartella del progetto (utile con un clone; con uvx non esiste)."""
+    """The .env in the project folder (useful with a clone; it does not exist with uvx)."""
     return Path(__file__).resolve().parents[2] / ".env"
 
 
 def _load_dotenv() -> None:
-    """Carica un .env minimale senza dipendenze esterne. Le variabili già presenti vincono.
+    """Load a minimal .env without external dependencies. Variables already set take precedence.
 
-    Fonti: MAILCOW_DAV_ENV_FILE (se impostata il file deve esistere: niente ripiego silenzioso) oppure il .env
-    nella cartella del progetto (clone). Mai la cartella corrente: un repo qualsiasi aperto nel client potrebbe
-    contenerne uno ostile. Solo chiavi MAILCOW_DAV_*: un .env non può impostare proxy o altre variabili."""
+    Sources: MAILCOW_DAV_ENV_FILE (if set, the file must exist: no silent fallback) or the .env
+    in the project folder (clone). Never the current folder: any repo opened in the client could
+    contain a hostile one. Only MAILCOW_DAV_* keys: a .env cannot set proxies or other variables."""
     explicit = os.environ.get("MAILCOW_DAV_ENV_FILE", "").strip()
     if explicit:
         path = Path(explicit).expanduser()
         if not path.is_file():
-            raise RuntimeError(f"MAILCOW_DAV_ENV_FILE punta a un file inesistente: {path}")
+            raise RuntimeError(f"MAILCOW_DAV_ENV_FILE points to a non-existent file: {path}")
     else:
         path = _project_env()
         if not path.is_file():
@@ -62,8 +62,8 @@ class Settings:
         }.items() if not v]
         if missing:
             raise RuntimeError(
-                "Variabili mancanti: " + ", ".join(missing)
-                + ". Vedi .env.example."
+                "Missing variables: " + ", ".join(missing)
+                + ". See .env.example."
             )
         principal = os.environ.get("MAILCOW_DAV_PRINCIPAL_PATH") or f"/SOGo/dav/{user}/"
         if not principal.endswith("/"):
