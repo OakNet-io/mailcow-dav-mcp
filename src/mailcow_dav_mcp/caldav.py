@@ -49,8 +49,9 @@ def _rrule_problem(comp: Event | Todo) -> str | None:
     return None
 
 
-def _check_rrule(text: str) -> vRecur:
-    """Valida una RRULE scritta dall'utente prima di salvarla."""
+def _check_rrule(text: str, start: date | datetime | None = None) -> vRecur:
+    """Valida una RRULE scritta dall'utente prima di salvarla: niente a capo, niente regole pericolose, e
+    deve produrre almeno un'occorrenza in tempi brevi (una regola impossibile fa girare dateutil per secondi)."""
     if _CTRL_RE.search(text):
         raise ValueError("rrule non può contenere a capo")
     rule = vRecur.from_ical(text)
@@ -59,6 +60,23 @@ def _check_rrule(text: str) -> vRecur:
     problem = _rrule_problem(probe)
     if problem:
         raise ValueError(f"rrule: {problem} (usa almeno FREQ=HOURLY e INTERVAL>=1)")
+    if start is not None:
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+        from dateutil.rrule import rrulestr
+
+        naive = start.replace(tzinfo=None) if isinstance(start, datetime) else datetime.combine(start, time(0, 0))
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(lambda: next(iter(rrulestr(rule.to_ical().decode(), dtstart=naive)), None))
+        try:
+            first = future.result(timeout=2)
+        except FutureTimeout:
+            first = None
+        except Exception as e:
+            raise ValueError(f"rrule non valida: {e}") from None
+        finally:
+            pool.shutdown(wait=False)
+        if first is None:
+            raise ValueError("rrule non produce nessuna occorrenza (combinazione di BYxxx impossibile?)")
     return rule
 
 
@@ -368,7 +386,8 @@ def apply_event_fields(ev: Event, tz: ZoneInfo, *, summary: str | None = None, s
         if "rrule" in ev:
             del ev["rrule"]
         if rrule:
-            ev.add("rrule", _check_rrule(rrule.strip().removeprefix("RRULE:")))
+            start_val = ev.decoded("dtstart") if ev.get("dtstart") is not None else None
+            ev.add("rrule", _check_rrule(rrule.strip().removeprefix("RRULE:"), start_val))
         else:
             # rrule="" = evento singolo: via anche date aggiuntive/escluse (le eccezioni le toglie Calendars.update)
             for k in ("rdate", "exdate", "exrule"):
@@ -585,9 +604,13 @@ def _add_timezones(cal: Calendar) -> None:
                 last = None if series_end is None or last is None else max(last, series_end)
                 if series_end is None:
                     break
-        horizon = date(date.today().year + _TZ_YEARS, 12, 31)
+        # le serie lunghissime si coprono fino a oggi+50 anni; le date vere degli eventi sempre
+        horizon = max(date(date.today().year + _TZ_YEARS, 12, 31), max(dates) if dates else date.min)
         first = max(min(dates), date(1900, 1, 1)) if dates else None
-        vtz = vtimezone(zi, first, min(last, horizon) if last else None)
+        last = min(last, horizon) if last else None
+        if first and last and last < first:
+            last = first
+        vtz = vtimezone(zi, first, last)
         vtz.add(_GENERATED, "generated")
         cal.add_component(vtz)
     if unknown:
@@ -623,6 +646,21 @@ def _master_of(cal: Calendar, comp: str, uid: str | None = None) -> Event | Todo
     if items:
         return items[0]
     raise NotFound(f"Nessun {comp} nella risorsa")
+
+
+def _vevents(cal: Calendar, uid: str) -> list[Event]:
+    return [ev for ev in cal.walk("VEVENT") if str(ev.get("UID", "")).strip() == uid.strip()]
+
+
+def _only_uid(cal: Calendar, uid: str) -> Calendar:
+    """Copia del Calendar con le sole VTIMEZONE e i componenti di quell'UID."""
+    out = Calendar()
+    for k, v in cal.items():
+        out[k] = v
+    for c in cal.subcomponents:
+        if c.name == "VTIMEZONE" or str(c.get("UID", "")).strip() == uid.strip():
+            out.add_component(c)
+    return out
 
 
 def _is_series(master: Event | Todo) -> bool:
@@ -829,7 +867,7 @@ class Calendars:
         d["calendar"] = calendar
         return d
 
-    def _occurrence(self, cal: Calendar, occurrence: str) -> Event:
+    def _occurrence(self, cal: Calendar, occurrence: str, uid: str | None = None) -> Event:
         """L'occorrenza di una serie identificata da `occurrence`: il suo RECURRENCE-ID (valore restituito da
         list_events) oppure l'inizio attuale. Le eccezioni già esistenti si cercano prima per RECURRENCE-ID,
         così un'occorrenza spostata resta raggiungibile con l'identificatore originale."""
@@ -842,6 +880,8 @@ class Calendars:
                 return vd == wanted.date()
             return _same_instant(v, wanted, self.tz)
 
+        if uid is not None:
+            cal = _only_uid(cal, uid)  # una risorsa con più UID: solo la serie richiesta
         for ev in cal.walk("VEVENT"):
             if ev.get("recurrence-id") is not None and same(ev.decoded("recurrence-id")):
                 return ev
@@ -891,7 +931,7 @@ class Calendars:
         if not occurrence:
             apply_event_fields(master, self.tz, organizer=self.user, **fields)
             if fields.get("rrule") == "":
-                for ev in list(cal.walk("VEVENT")):  # evento singolo: le eccezioni della serie non hanno più senso
+                for ev in _vevents(cal, uid):  # evento singolo: le eccezioni della serie non hanno più senso
                     if ev is not master and ev.get("recurrence-id") is not None:
                         cal.subcomponents.remove(ev)
             new_etag = self._put(href, cal, etag)
@@ -899,9 +939,9 @@ class Calendars:
             d["calendar"] = cal_id
             return d
 
-        occ = self._occurrence(cal, occurrence)
+        occ = self._occurrence(cal, occurrence, uid)
         rid = occ.decoded("recurrence-id") if occ.get("recurrence-id") is not None else occ.decoded("dtstart")
-        target = next((ev for ev in cal.walk("VEVENT") if ev.get("recurrence-id") is not None
+        target = next((ev for ev in _vevents(cal, uid) if ev.get("recurrence-id") is not None
                        and _same_instant(ev.decoded("recurrence-id"), rid, self.tz)), None)
         if target is None:
             target = Event()
@@ -934,9 +974,9 @@ class Calendars:
             self.dav.delete(href, etag=etag)
             return {"deleted": True, "uid": uid, "href": href, "calendar": cal_id}
         self._require_series(master, uid)  # mai trasformare "una occorrenza" in "tutto l'evento"
-        occ = self._occurrence(cal, occurrence)
+        occ = self._occurrence(cal, occurrence, uid)
         rid = occ.decoded("recurrence-id") if occ.get("recurrence-id") is not None else occ.decoded("dtstart")
-        for ev in list(cal.walk("VEVENT")):  # rimuovi eventuale eccezione già esistente
+        for ev in _vevents(cal, uid):  # rimuovi eventuale eccezione già esistente
             if ev.get("recurrence-id") is not None and _same_instant(ev.decoded("recurrence-id"), rid, self.tz):
                 cal.subcomponents.remove(ev)
         mstart = master.decoded("dtstart")
@@ -960,7 +1000,7 @@ class Calendars:
         href, cal, etag, cal_id = self._find(uid, calendar)
         me = self.user.lower()
         hit = False
-        for ev in cal.walk("VEVENT"):
+        for ev in _vevents(cal, uid):
             att = ev.get("attendee")
             for a in (att if isinstance(att, list) else [att] if att is not None else []):
                 if _mail(a).lower() == me:

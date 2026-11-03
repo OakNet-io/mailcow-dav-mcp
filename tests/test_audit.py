@@ -47,7 +47,7 @@ def test_foreign_or_escaping_href_rejected():
 
 def test_request_never_leaves_configured_host():
     seen = []
-    dav = _client(lambda req: seen.append(str(req.url)) or httpx.Response(200, text="x"))
+    dav = _client(lambda req: seen.append(str(req.url)) or httpx.Response(200, stream=httpx.ByteStream(b"x")))
     for bad in ("https://attacker.example/x", "//attacker.example/x", "/a/../b"):
         with pytest.raises(DavError):
             dav.get(bad)
@@ -115,11 +115,12 @@ def test_event_master_matches_uid():
 def test_dav_response_size_capped_after_decompression(monkeypatch):
     monkeypatch.setenv("MAILCOW_DAV_MAX_RESPONSE_MB", "1")
     bomb = gzip.compress(b"A" * (3 * 1024 * 1024))
-    dav = _client(lambda req: httpx.Response(200, content=bomb, headers={"Content-Encoding": "gzip"}))
+    dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(bomb), headers={"Content-Encoding": "gzip"}))
     with pytest.raises(DavError, match="oltre"):
         dav.get("/a/x.vcf")
     small = gzip.compress(b"BEGIN:VCARD")
-    dav = _client(lambda req: httpx.Response(200, content=small, headers={"Content-Encoding": "gzip", "ETag": '"1"'}))
+    dav = _client(lambda req: httpx.Response(200, stream=httpx.ByteStream(small),
+                                                 headers={"Content-Encoding": "gzip", "ETag": '"1"'}))
     assert dav.get("/a/x.vcf") == ("BEGIN:VCARD", '"1"')
 
 
@@ -215,3 +216,85 @@ def test_photo_url_not_fetched_by_default_and_embedded_capped(monkeypatch):
     books.dav.text = serialize_vcard(big)
     with pytest.raises(ValueError, match="troppo grande"):
         books.photo("P1")
+
+
+# -- verifica dei fix (seconda passata Codex) -------------------------------------------------
+
+def test_default_port_href_accepted():
+    dav = DavClient("https://dav.example.com", "u", "p")
+    assert dav.parse_multistatus(_ms("https://dav.example.com:443/a/1.vcf"))[0].href == "/a/1.vcf"
+    with pytest.raises(DavError):
+        dav.parse_multistatus(_ms("https://dav.example.com:8443/a/1.vcf"))
+
+
+def test_deflate_and_identity_responses():
+    import zlib
+    for enc, body in (("deflate", zlib.compress(b"OK")), ("deflate", zlib.compress(b"OK")[2:-4]), ("", b"OK")):
+        dav = _client(lambda req, b=body, e=enc: httpx.Response(200, stream=httpx.ByteStream(b),
+                                                                 headers={"Content-Encoding": e} if e else {}))
+        assert dav.get("/a/x")[0] == "OK"
+
+
+def test_data_uri_photo_returned_as_image_and_capped(monkeypatch):
+    import base64
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    card = new_vcard(uid="D1", fn="Data")
+    card.add("photo").value = "data:image/png;base64," + base64.b64encode(png).decode()
+    card.photo.params["VALUE"] = ["uri"]
+
+    class Dav:
+        def get(self, href):
+            return serialize_vcard(card), '"1"'
+    books = AddressBooks(Dav(), PRINCIPAL)
+    assert books.photo("D1") == (png, "image/png")
+    monkeypatch.setattr("mailcow_dav_mcp.carddav.PHOTO_MAX", 8)
+    with pytest.raises(ValueError):
+        books.photo("D1")
+
+
+def test_export_and_photo_annotations():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    assert tools["export_contacts"].annotations.destructiveHint is True
+    assert tools["get_contact_photo"].annotations.openWorldHint is True
+    assert "export_contacts" not in server.WRITE_TOOLS
+
+
+def test_unwritable_export_dir_does_not_block_start(tmp_path, monkeypatch):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    monkeypatch.setenv("MAILCOW_DAV_EXPORT_DIR", str(blocker / "sub"))
+    try:
+        server._confine()
+    finally:
+        safety.confine_local_files(None)
+
+
+def test_csv_with_cr_line_endings(tmp_path):
+    f = tmp_path / "in.csv"
+    f.write_bytes(b"fn,email\rMario,mario@example.com\r")
+    assert [c.fn.value for c in Bulk(None)._load(str(f))] == ["Mario"]
+
+
+def test_vtimezone_for_far_future_event():
+    ev = Event()
+    ev.add("uid", "G")
+    ev.add("dtstart", datetime(2079, 5, 1, 12, 0, tzinfo=ZoneInfo("Asia/Gaza")))
+    cal = new_calendar(ev)
+    assert len(list(cal.walk("VTIMEZONE"))) == 1
+    assert list(cal.walk("VTIMEZONE"))[0].subcomponents
+
+
+def test_impossible_rrule_rejected_on_write():
+    with pytest.raises(ValueError, match="nessuna occorrenza"):
+        apply_event_fields(Event(), TZ, start="2026-01-01T10:00", rrule="FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30")
+
+
+def test_exceptions_and_respond_scoped_to_uid():
+    cal = Calendar.from_ical(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+        "BEGIN:VEVENT\r\nUID:MINE\r\nDTSTAMP:20261101T000000Z\r\nDTSTART:20261102T100000Z\r\n"
+        "RRULE:FREQ=WEEKLY;COUNT=3\r\nSUMMARY:Mio\r\nEND:VEVENT\r\n"
+        "BEGIN:VEVENT\r\nUID:OTHER\r\nDTSTAMP:20261101T000000Z\r\nRECURRENCE-ID:20261109T100000Z\r\n"
+        "DTSTART:20261109T100000Z\r\nSUMMARY:Altro\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    occ = Calendars(None, PRINCIPAL)._occurrence(cal, "2026-11-09T10:00:00Z", "MINE")
+    assert str(occ["uid"]) == "MINE"
