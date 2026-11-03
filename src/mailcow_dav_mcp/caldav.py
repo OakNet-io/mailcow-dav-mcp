@@ -1,4 +1,4 @@
-"""Calendario CalDAV (SOGo) — eventi VEVENT (con occorrenze singole), task VTODO, risposta inviti."""
+"""CalDAV calendar (SOGo) — VEVENT events (with single occurrences), VTODO tasks, invitation replies."""
 
 from __future__ import annotations
 
@@ -32,34 +32,34 @@ _CTRL_RE = re.compile(r"[\r\n\x00]")
 
 
 def _rrule_problem(comp: Event | Todo) -> str | None:
-    """Motivo per cui una regola di ricorrenza non va espansa (dateutil cicla all'infinito con INTERVAL=0,
-    e SECONDLY/MINUTELY generano milioni di occorrenze), oppure None se è gestibile."""
+    """Reason why a recurrence rule must not be expanded (dateutil loops forever with INTERVAL=0,
+    and SECONDLY/MINUTELY generate millions of occurrences), or None if it is manageable."""
     for key in ("rrule", "exrule"):
         rules = comp.get(key)
         for rule in (rules if isinstance(rules, list) else [rules] if rules is not None else []):
             freq = str((rule.get("FREQ") or [""])[0]).upper()
             if freq in ("SECONDLY", "MINUTELY"):
-                return f"FREQ={freq} non supportata"
+                return f"FREQ={freq} not supported"
             try:
                 interval = int((rule.get("INTERVAL") or [1])[0])
             except (TypeError, ValueError):
-                return "INTERVAL non valido"
+                return "invalid INTERVAL"
             if interval < 1:
-                return "INTERVAL deve essere almeno 1"
+                return "INTERVAL must be at least 1"
     return None
 
 
 def _check_rrule(text: str, start: date | datetime | None = None) -> vRecur:
-    """Valida una RRULE scritta dall'utente prima di salvarla: niente a capo, niente regole pericolose, e
-    deve produrre almeno un'occorrenza in tempi brevi (una regola impossibile fa girare dateutil per secondi)."""
+    """Validate a user-written RRULE before saving it: no line breaks, no dangerous rules, and
+    it must produce at least one occurrence quickly (an impossible rule makes dateutil spin for seconds)."""
     if _CTRL_RE.search(text):
-        raise ValueError("rrule non può contenere a capo")
+        raise ValueError("rrule cannot contain line breaks")
     rule = vRecur.from_ical(text)
     probe = Event()
     probe.add("rrule", rule)
     problem = _rrule_problem(probe)
     if problem:
-        raise ValueError(f"rrule: {problem} (usa almeno FREQ=HOURLY e INTERVAL>=1)")
+        raise ValueError(f"rrule: {problem} (use at least FREQ=HOURLY and INTERVAL>=1)")
     if start is not None:
         _probe_rrule(rule.to_ical().decode(), start)
     return rule
@@ -78,8 +78,8 @@ print("ok" if next(iter(rrulestr(sys.argv[1], dtstart=start)), None) is not None
 
 
 def _probe_rrule(text: str, start: date | datetime) -> None:
-    """La regola deve produrre almeno un'occorrenza. Il calcolo gira in un processo separato con timeout:
-    dateutil non è interrompibile, e un thread bloccato su una regola impossibile resterebbe occupato."""
+    """The rule must produce at least one occurrence. The computation runs in a separate process with a timeout:
+    dateutil cannot be interrupted, and a thread stuck on an impossible rule would stay busy."""
     import subprocess
     import sys
 
@@ -96,17 +96,17 @@ def _probe_rrule(text: str, start: date | datetime) -> None:
         res = subprocess.run([sys.executable, "-I", "-c", _PROBE, text, dt.isoformat(), zone],
                              capture_output=True, text=True, timeout=3)
     except subprocess.TimeoutExpired:
-        raise ValueError("rrule troppo costosa da calcolare (nessuna occorrenza trovata in 3 secondi)") from None
+        raise ValueError("rrule too expensive to compute (no occurrence found in 3 seconds)") from None
     if res.returncode != 0:
-        raise ValueError("rrule non valida: " + (res.stderr.strip().splitlines() or ["errore"])[-1])
+        raise ValueError("invalid rrule: " + (res.stderr.strip().splitlines() or ["error"])[-1])
     if res.stdout.strip() != "ok":
-        raise ValueError("rrule non produce nessuna occorrenza (combinazione di BYxxx impossibile?)")
+        raise ValueError("rrule produces no occurrences (impossible BYxxx combination?)")
 
 
 # -- date/ora ---------------------------------------------------------------
 
 def parse_dt(value: str, tz: ZoneInfo, *, all_day: bool = False) -> date | datetime:
-    """ISO 8601 → date (all_day) o datetime tz-aware. Senza offset assume tz."""
+    """ISO 8601 → date (all_day) or tz-aware datetime. Without an offset tz is assumed."""
     v = value.strip()
     if all_day:
         return date.fromisoformat(v[:10])
@@ -142,7 +142,7 @@ def _iso(v: Any, tz: ZoneInfo) -> str | None:
 
 
 def _utc(x: date | datetime, tz: ZoneInfo) -> datetime:
-    """Istante in UTC (confronti corretti anche a cavallo del cambio d'ora, dove l'ora locale si ripete)."""
+    """Instant in UTC (correct comparisons even across DST changes, where local time repeats)."""
     if isinstance(x, datetime):
         return (x if x.tzinfo else x.replace(tzinfo=tz)).astimezone(timezone.utc)
     return datetime.combine(x, time(0, 0), tzinfo=tz).astimezone(timezone.utc)
@@ -159,10 +159,10 @@ def _same_instant(a: date | datetime, b: date | datetime, tz: ZoneInfo) -> bool:
 # -- promemoria -----------------------------------------------------------------
 
 def parse_alarm(spec: str) -> tuple[str, timedelta]:
-    """'15m' → (DISPLAY, -15min); 'email:1d' → (EMAIL, -1 giorno); '0' → all'inizio."""
+    """'15m' → (DISPLAY, -15min); 'email:1d' → (EMAIL, -1 day); '0' → at the start."""
     m = _ALARM_RE.match(spec.strip())
     if not m:
-        raise ValueError(f"Promemoria non valido: {spec!r} (usa es. '15m', '2h', '1d', 'email:1d')")
+        raise ValueError(f"Invalid alarm: {spec!r} (use e.g. '15m', '2h', '1d', 'email:1d')")
     action = (m.group(1) or "display").upper()
     n = int(m.group(2))
     unit = _UNIT[(m.group(3) or "m").lower()]
@@ -188,7 +188,7 @@ def alarm_to_str(comp: Alarm) -> str:
 
 def _set_alarms(comp: Event | Todo, alarms: list[str] | None, summary_hint: str, email: str | None,
                 related: str | None = None) -> None:
-    """related="END": trigger relativo alla fine (per i task: la scadenza DUE)."""
+    """related="END": trigger relative to the end (for tasks: the DUE date)."""
     if alarms is None:
         return
     for sub in list(comp.subcomponents):
@@ -324,7 +324,7 @@ def apply_event_fields(ev: Event, tz: ZoneInfo, *, summary: str | None = None, s
                        status: str | None = None, organizer: str | None = None,
                        categories: list[str] | None = None, privacy: str | None = None,
                        busy: str | None = None, url: str | None = None) -> None:
-    """Applica i campi non-None. Stringa vuota = rimuovi. Liste sostituiscono integralmente."""
+    """Apply the non-None fields. Empty string = remove. Lists replace entirely."""
     _set_text(ev, "summary", summary)
     _set_text(ev, "location", location)
     _set_text(ev, "description", description)
@@ -350,8 +350,8 @@ def apply_event_fields(ev: Event, tz: ZoneInfo, *, summary: str | None = None, s
         to_timed = current_start is not None and cur_all_day and not target_all_day
         to_all_day = current_start is not None and not cur_all_day and target_all_day
         if to_timed and not start:
-            raise ValueError("Per trasformare un evento di un giorno intero in un evento con orario "
-                             "indica start (ed eventualmente end) con l'ora")
+            raise ValueError("To turn an all-day event into a timed event "
+                             "give start (and optionally end) with a time")
         new_start = parse_dt(start, tz, all_day=target_all_day) if start else current_start
         if target_all_day and isinstance(new_start, datetime):
             new_start = new_start.astimezone(tz).date()
@@ -372,7 +372,7 @@ def apply_event_fields(ev: Event, tz: ZoneInfo, *, summary: str | None = None, s
         if not target_all_day and new_start is not None and new_end is None:
             new_end = new_start + timedelta(hours=1)
         if not target_all_day and new_start is not None and new_end is not None and _utc(new_end, tz) < _utc(new_start, tz):
-            raise ValueError("end deve essere successivo a start")
+            raise ValueError("end must be after start")
         if new_start is not None:
             if "dtstart" in ev:
                 del ev["dtstart"]
@@ -391,10 +391,10 @@ def apply_event_fields(ev: Event, tz: ZoneInfo, *, summary: str | None = None, s
             if not raw:
                 continue
             if _CTRL_RE.search(raw):
-                raise ValueError(f"attendee non valido (contiene a capo): {raw!r}")
+                raise ValueError(f"invalid attendee (contains line breaks): {raw!r}")
             name, email = (raw.rsplit("<", 1)[0].strip(), raw.rsplit("<", 1)[1].rstrip(">").strip()) if "<" in raw else (None, raw)
             if not re.fullmatch(r"[^\s<>@]+@[^\s<>@]+", email):
-                raise ValueError(f"Email partecipante non valida: {email!r}")
+                raise ValueError(f"Invalid attendee email: {email!r}")
             a = vCalAddress(f"mailto:{email}")
             if name:
                 a.params["CN"] = vText(name)
@@ -417,7 +417,7 @@ def apply_event_fields(ev: Event, tz: ZoneInfo, *, summary: str | None = None, s
                 if k in ev:
                     del ev[k]
 
-    _set_alarms(ev, alarms, summary or str(ev.get("summary", "Promemoria")), organizer)
+    _set_alarms(ev, alarms, summary or str(ev.get("summary", "Reminder")), organizer)
     _touch(ev)
 
 
@@ -481,9 +481,9 @@ def apply_todo_fields(td: Todo, tz: ZoneInfo, *, summary: str | None = None, des
     if (due or start) and td.get("due") is not None and td.get("dtstart") is not None:
         d_due, d_start = td.decoded("due"), td.decoded("dtstart")
         if isinstance(d_due, datetime) != isinstance(d_start, datetime):
-            raise ValueError("due e start devono essere entrambe date (YYYY-MM-DD) o entrambe data+ora")
+            raise ValueError("due and start must both be dates (YYYY-MM-DD) or both date+time")
         if _utc(d_due, tz) <= _utc(d_start, tz):
-            raise ValueError("due (scadenza) deve essere successiva a start")
+            raise ValueError("due (deadline) must be after start")
 
     if priority is not None:
         if "priority" in td:
@@ -493,7 +493,7 @@ def apply_todo_fields(td: Todo, tz: ZoneInfo, *, summary: str | None = None, des
             if p is None:
                 p = int(priority)
             if not 0 <= p <= 9:
-                raise ValueError("priority: 1 (alta) … 9 (bassa), 0 = nessuna, oppure high/medium/low")
+                raise ValueError("priority: 1 (high) … 9 (low), 0 = none, or high/medium/low")
             if p:
                 td.add("priority", p)
 
@@ -513,14 +513,14 @@ def apply_todo_fields(td: Todo, tz: ZoneInfo, *, summary: str | None = None, des
         td.add("percent-complete", max(0, min(100, int(percent))))
 
     related = "END" if td.get("due") is not None else None  # promemoria relativi alla scadenza
-    _set_alarms(td, alarms, summary or str(td.get("summary", "Promemoria")), email, related=related)
+    _set_alarms(td, alarms, summary or str(td.get("summary", "Reminder")), email, related=related)
     _anchor_todo_alarms(td)
     _touch(td)
 
 
 def _anchor_todo_alarms(td: Todo) -> None:
-    """Riaggancia solo i trigger relativi rimasti senza ancora: RELATED=END senza DUE passa a DTSTART,
-    RELATED=START (default) senza DTSTART passa a DUE. Gli ancoraggi validi restano come sono."""
+    """Re-anchor only the relative triggers left without an anchor: RELATED=END without DUE moves to DTSTART,
+    RELATED=START (default) without DTSTART moves to DUE. Valid anchors stay as they are."""
     has_due = td.get("due") is not None or (td.get("dtstart") is not None and td.get("duration") is not None)
     has_start = td.get("dtstart") is not None
     for a in td.subcomponents:
@@ -539,8 +539,8 @@ def _anchor_todo_alarms(td: Todo) -> None:
 
 
 def _no_anchor() -> ValueError:
-    return ValueError("I promemoria di un task richiedono una scadenza (due) o un inizio (start): "
-                      "imposta una data oppure togli i promemoria con alarms=[]")
+    return ValueError("Task alarms require a deadline (due) or a start (start): "
+                      "set a date or remove the alarms with alarms=[]")
 
 
 # -- VCALENDAR ---------------------------------------------------------------------
@@ -563,8 +563,8 @@ def _as_date(v: Any) -> date | None:
 
 
 def _series_end(comp: Event | Todo) -> date | None:
-    """Data (limite superiore) dell'ultima occorrenza di una serie con COUNT/UNTIL; None se la serie non
-    finisce o è troppo lunga da percorrere. UNTIL si legge direttamente, senza espandere la serie."""
+    """Date (upper bound) of the last occurrence of a series with COUNT/UNTIL; None if the series does not
+    end or is too long to walk. UNTIL is read directly, without expanding the series."""
     from dateutil.rrule import rrulestr
 
     rule = comp.get("rrule")
@@ -591,8 +591,8 @@ def _series_end(comp: Event | Todo) -> date | None:
 
 
 def _add_timezones(cal: Calendar) -> None:
-    """Aggiunge una VTIMEZONE per ogni TZID usato e non ancora presente, valida sull'intervallo delle date
-    che la usano (le regole attuali non vanno applicate a date passate con regole diverse)."""
+    """Add a VTIMEZONE for each TZID used and not yet present, valid over the range of the dates
+    that use it (current rules must not be applied to past dates with different rules)."""
     used: dict[str, list[date]] = {}
     for comp in cal.walk():
         if comp.name in ("VTIMEZONE", "STANDARD", "DAYLIGHT"):
@@ -644,7 +644,7 @@ def _add_timezones(cal: Calendar) -> None:
         present = {str(t.get("tzid")) for t in cal.walk("VTIMEZONE")}
         still = [t for t in unknown if t not in present]
         if still:
-            raise ValueError(f"Fuso orario sconosciuto {', '.join(still)}: impossibile generare la VTIMEZONE")
+            raise ValueError(f"Unknown time zone {', '.join(still)}: cannot generate the VTIMEZONE")
 
 
 def serialize(cal: Calendar) -> str:
@@ -654,21 +654,21 @@ def serialize(cal: Calendar) -> str:
 # -- client ---------------------------------------------------------------------
 
 def _has_uid(cal: Calendar, comp: str, uid: str) -> bool:
-    """True se il Calendar contiene un componente `comp` con esattamente quell'UID (gli UID sono case-sensitive)."""
+    """True if the Calendar contains a `comp` component with exactly that UID (UIDs are case-sensitive)."""
     u = uid.strip()
     return any(str(c.get("UID", "")).strip() == u for c in cal.walk(comp))
 
 
 def _master_of(cal: Calendar, comp: str, uid: str | None = None) -> Event | Todo:
-    """Il componente principale della serie (senza RECURRENCE-ID), qualunque sia l'ordine nel file.
-    Con `uid` considera solo i componenti con quell'UID (una risorsa con più UID non deve confondere)."""
+    """The main component of the series (without RECURRENCE-ID), whatever the order in the file.
+    With `uid` only components with that UID are considered (a resource with several UIDs must not confuse it)."""
     items = [c for c in cal.walk(comp) if uid is None or str(c.get("UID", "")).strip() == uid.strip()]
     masters = [c for c in items if c.get("recurrence-id") is None]
     if masters:
         return masters[0]
     if items:
         return items[0]
-    raise NotFound(f"Nessun {comp} nella risorsa")
+    raise NotFound(f"No {comp} in the resource")
 
 
 def _vevents(cal: Calendar, uid: str) -> list[Event]:
@@ -676,7 +676,7 @@ def _vevents(cal: Calendar, uid: str) -> list[Event]:
 
 
 def _only_uid(cal: Calendar, uid: str) -> Calendar:
-    """Copia del Calendar con le sole VTIMEZONE e i componenti di quell'UID."""
+    """Copy of the Calendar with only the VTIMEZONEs and the components of that UID."""
     out = Calendar()
     for k, v in cal.items():
         out[k] = v
@@ -700,7 +700,7 @@ class Calendars:
         self.user = user
 
     def cal_path(self, calendar: str) -> str:
-        return f"{self.root}{collection_segment(calendar, 'calendario')}/"
+        return f"{self.root}{collection_segment(calendar, 'calendar')}/"
 
     def list(self) -> list[dict[str, Any]]:
         res = self.dav.propfind(self.root, [
@@ -719,7 +719,7 @@ class Calendars:
         return out
 
     def _calendar_ids(self, calendar: str) -> list[tuple[str, str]]:
-        """[(id, nome)] — tutti i calendari se calendar == '*'."""
+        """[(id, name)] — all calendars if calendar == '*'."""
         if calendar != self.ALL:
             return [(calendar, calendar)]
         return [(c["id"], c["name"]) for c in self.list()]
@@ -746,8 +746,8 @@ class Calendars:
 
     def _parse_events(self, resources: list[Resource], *, expand_between: tuple[datetime, datetime] | None = None
                       ) -> list[dict[str, Any]]:
-        """Con expand_between, le ricorrenze vengono espanse LOCALMENTE (recurring-ical-events):
-        non ci si affida all'expand del server, che in alcuni casi sbaglia i fusi."""
+        """With expand_between, recurrences are expanded LOCALLY (recurring-ical-events):
+        the server's expand is not relied upon, as it sometimes gets time zones wrong."""
         out = []
         for r in resources:
             data = r.text(NS_CAL, "calendar-data")
@@ -777,7 +777,7 @@ class Calendars:
         return out
 
     def _expand(self, cal: Calendar, start: datetime, end: datetime) -> tuple[list[Event], bool]:
-        """Occorrenze in [start, end) con un tetto (MAX_EXPAND): una regola enorme non esaurisce la memoria."""
+        """Occurrences in [start, end) with a cap (MAX_EXPAND): a huge rule does not exhaust memory."""
         out: list[Event] = []
         end_utc = _utc(end, self.tz)
         if any(_rrule_problem(ev) for ev in cal.walk("VEVENT")):
@@ -802,7 +802,7 @@ class Calendars:
 
     def events(self, calendar: str = "personal", start: str | None = None, end: str | None = None,
                expand: bool = True, limit: int | None = 200) -> list[dict[str, Any]]:
-        """Eventi nell'intervallo [start, end). Default: da oggi a +30 giorni. calendar='*' = tutti."""
+        """Events in the range [start, end). Default: from today to +30 days. calendar='*' = all."""
         s = parse_dt(start, self.tz) if start else datetime.now(self.tz).replace(hour=0, minute=0, second=0, microsecond=0)
         e = parse_dt(end, self.tz) if end else s + timedelta(days=30)
         rng = (_utc_stamp(s, self.tz), _utc_stamp(e, self.tz))
@@ -820,7 +820,7 @@ class Calendars:
 
     def search(self, query: str, calendar: str = "personal", start: str | None = None,
                end: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        """Ricerca testuale in summary/location/description/categorie (default: ±365 giorni)."""
+        """Text search in summary/location/description/categories (default: ±365 days)."""
         now = datetime.now(self.tz)
         s = start or (now - timedelta(days=365)).isoformat()
         e = end or (now + timedelta(days=365)).isoformat()
@@ -830,7 +830,7 @@ class Calendars:
         return found[:limit]
 
     def _find(self, uid: str, calendar: str, comp: str = "VEVENT") -> tuple[str, Calendar, str | None, str]:
-        """Ritorna (href, Calendar, etag, calendar_id). calendar='*' cerca in tutti."""
+        """Return (href, Calendar, etag, calendar_id). calendar='*' searches all of them."""
         for cal_id, _ in self._calendar_ids(calendar):
             path = self.cal_path(cal_id)
             if is_safe_name(uid):
@@ -852,10 +852,10 @@ class Calendars:
                         text, etag = self.dav.get(r.href)
                         fresh = Calendar.from_ical(text)
                         if not _has_uid(fresh, comp, uid):  # sostituita tra REPORT e GET: non è più lei
-                            raise PreconditionFailed(f"{comp} {uid!r} sostituito da un altro client: riprova")
+                            raise PreconditionFailed(f"{comp} {uid!r} replaced by another client: try again")
                         return r.href, fresh, etag, cal_id
                     return r.href, cal, r.etag, cal_id
-        raise NotFound(f"{comp} con UID {uid!r} non trovato in {calendar!r}")
+        raise NotFound(f"{comp} with UID {uid!r} not found in {calendar!r}")
 
     def _put(self, href: str, cal: Calendar, etag: str | None) -> str | None:
         _add_timezones(cal)
@@ -868,7 +868,7 @@ class Calendars:
         evs = [event_to_dict(ev, self.tz, href=href, etag=etag) for ev in cal.walk("VEVENT")
                if str(ev.get("UID", "")).strip() == uid.strip()]
         if not evs:
-            raise NotFound(f"Nessun VEVENT in {href}")
+            raise NotFound(f"No VEVENT in {href}")
         master = next((e for e in evs if not e.get("recurrence_id")), evs[0])
         master["calendar"] = cal_id
         if len(evs) > 1:
@@ -883,7 +883,7 @@ class Calendars:
         ev.add("created", datetime.now(timezone.utc))
         apply_event_fields(ev, self.tz, organizer=self.user, **fields)
         if ev.get("dtstart") is None:
-            raise ValueError("start è obbligatorio")
+            raise ValueError("start is required")
         href = f"{self.cal_path(calendar)}{uid}.ics"
         etag = self.dav.put(href, serialize(new_calendar(ev)), "text/calendar; charset=utf-8", create=True)
         d = event_to_dict(ev, self.tz, href=href, etag=etag)
@@ -891,9 +891,9 @@ class Calendars:
         return d
 
     def _occurrence(self, cal: Calendar, occurrence: str, uid: str | None = None) -> Event:
-        """L'occorrenza di una serie identificata da `occurrence`: il suo RECURRENCE-ID (valore restituito da
-        list_events) oppure l'inizio attuale. Le eccezioni già esistenti si cercano prima per RECURRENCE-ID,
-        così un'occorrenza spostata resta raggiungibile con l'identificatore originale."""
+        """The occurrence of a series identified by `occurrence`: its RECURRENCE-ID (value returned by
+        list_events) or its current start. Existing exceptions are looked up by RECURRENCE-ID first,
+        so a moved occurrence stays reachable with the original identifier."""
         wanted = parse_dt(occurrence, self.tz, all_day=False)
         date_only = len(occurrence.strip()) == 10
 
@@ -911,7 +911,7 @@ class Calendars:
         master = _master_of(cal, "VEVENT")
         problem = _rrule_problem(master)
         if problem:
-            raise ValueError(f"Serie non gestibile ({problem}): modificala da un altro client")
+            raise ValueError(f"Unmanageable series ({problem}): edit it from another client")
         query = recurring_ical_events.of(cal, keep_recurrence_attributes=True)
         lo = datetime.combine(wanted.date(), time(0, 0), tzinfo=self.tz) if date_only else wanted - timedelta(days=1)
         hi = lo + timedelta(days=1) if date_only else wanted + timedelta(days=1)
@@ -927,30 +927,30 @@ class Calendars:
         for occ in candidates:
             if same(occ.decoded("dtstart")):
                 return occ
-        raise NotFound(f"Nessuna occorrenza della serie corrisponde a {occurrence}")
+        raise NotFound(f"No occurrence of the series matches {occurrence}")
 
     def _master(self, cal: Calendar, uid: str | None = None) -> Event:
         masters = [ev for ev in cal.walk("VEVENT") if ev.get("recurrence-id") is None
                    and (uid is None or str(ev.get("UID", "")).strip() == uid.strip())]
         if not masters:
-            raise NotFound("Nessun VEVENT master")
+            raise NotFound("No master VEVENT")
         return masters[0]
 
     @staticmethod
     def _require_series(master: Event, uid: str) -> None:
         if not _is_series(master):
-            raise ValueError(f"L'evento {uid} non è ricorrente: `occurrence` non si applica. "
-                             "Ometti occurrence per agire sull'intero evento.")
+            raise ValueError(f"Event {uid} is not recurring: `occurrence` does not apply. "
+                             "Omit occurrence to act on the whole event.")
 
     def update(self, uid: str, calendar: str = "personal", occurrence: str | None = None,
                expected_etag: str | None = None, **fields: Any) -> dict[str, Any]:
         href, cal, etag, cal_id = self._find(uid, calendar)
-        check_expected_etag(expected_etag, etag, f"L'evento {uid}")
+        check_expected_etag(expected_etag, etag, f"Event {uid}")
         master = self._master(cal, uid)
         if occurrence:
             self._require_series(master, uid)
             if fields.get("rrule") is not None:
-                raise ValueError("rrule si cambia sull'intera serie: ometti occurrence")
+                raise ValueError("rrule is changed on the whole series: omit occurrence")
         if not occurrence:
             apply_event_fields(master, self.tz, organizer=self.user, **fields)
             if fields.get("rrule") == "":
@@ -991,7 +991,7 @@ class Calendars:
     def delete(self, uid: str, calendar: str = "personal", occurrence: str | None = None,
                expected_etag: str | None = None) -> dict[str, Any]:
         href, cal, etag, cal_id = self._find(uid, calendar)
-        check_expected_etag(expected_etag, etag, f"L'evento {uid}")
+        check_expected_etag(expected_etag, etag, f"Event {uid}")
         master = self._master(cal, uid)
         if not occurrence:
             self.dav.delete(href, etag=etag)
@@ -1013,13 +1013,13 @@ class Calendars:
         return {"deleted_occurrence": _iso(rid, self.tz), "uid": uid, "href": href, "calendar": cal_id, "etag": new_etag}
 
     def respond(self, uid: str, response: str, calendar: str = "personal", comment: str | None = None) -> dict[str, Any]:
-        """Imposta il PARTSTAT dell'utente su un invito ricevuto; SOGo invia la risposta all'organizzatore."""
+        """Set the user's PARTSTAT on a received invitation; SOGo sends the reply to the organizer."""
         partstat = {"accept": "ACCEPTED", "accepted": "ACCEPTED", "decline": "DECLINED", "declined": "DECLINED",
                     "tentative": "TENTATIVE", "maybe": "TENTATIVE"}.get(response.strip().lower())
         if not partstat:
             raise ValueError("response: accept | decline | tentative")
         if not self.user:
-            raise ValueError("Utente non configurato")
+            raise ValueError("User not configured")
         href, cal, etag, cal_id = self._find(uid, calendar)
         me = self.user.lower()
         hit = False
@@ -1038,7 +1038,7 @@ class Calendars:
                     del ev["dtstamp"]
                 ev.add("dtstamp", datetime.now(timezone.utc))
         if not hit:
-            raise ValueError(f"{self.user} non è tra i partecipanti di questo evento")
+            raise ValueError(f"{self.user} is not among the attendees of this event")
         new_etag = self._put(href, cal, etag)
         d = self.get(uid, cal_id)
         d["etag"] = new_etag
@@ -1083,7 +1083,7 @@ class Calendars:
         td.add("created", datetime.now(timezone.utc))
         apply_todo_fields(td, self.tz, email=self.user, **fields)
         if td.get("summary") is None:
-            raise ValueError("summary è obbligatorio")
+            raise ValueError("summary is required")
         if "status" not in td:
             td.add("status", "NEEDS-ACTION")
         href = f"{self.cal_path(calendar)}{uid}.ics"
@@ -1095,7 +1095,7 @@ class Calendars:
     def update_task(self, uid: str, calendar: str = "personal", expected_etag: str | None = None,
                     **fields: Any) -> dict[str, Any]:
         href, cal, etag, cal_id = self._find(uid, calendar, comp="VTODO")
-        check_expected_etag(expected_etag, etag, f"Il task {uid}")
+        check_expected_etag(expected_etag, etag, f"Task {uid}")
         td = _master_of(cal, "VTODO", uid)
         apply_todo_fields(td, self.tz, email=self.user, **fields)
         new_etag = self._put(href, cal, etag)
@@ -1105,6 +1105,6 @@ class Calendars:
 
     def delete_task(self, uid: str, calendar: str = "personal", expected_etag: str | None = None) -> dict[str, Any]:
         href, _, etag, cal_id = self._find(uid, calendar, comp="VTODO")
-        check_expected_etag(expected_etag, etag, f"Il task {uid}")
+        check_expected_etag(expected_etag, etag, f"Task {uid}")
         self.dav.delete(href, etag=etag)
         return {"deleted": True, "uid": uid, "href": href, "calendar": cal_id}

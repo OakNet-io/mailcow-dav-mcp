@@ -23,13 +23,13 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 @pytest.mark.parametrize("url", ["http://127.0.0.1/a.png", "http://169.254.169.254/latest/meta-data",
                                  "http://[::1]/x.png", "http://10.0.0.5/x.png", "http://192.168.1.1/x.png"])
 def test_photo_url_rejects_non_public_addresses(url):
-    with pytest.raises(ValueError, match="non pubblico"):
+    with pytest.raises(ValueError, match="non-public"):
         safety.fetch_url_limited(url)
 
 
 def test_photo_url_rejects_hostname_resolving_to_lan(monkeypatch):
     monkeypatch.setattr(safety.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("192.168.0.10", 80))])
-    with pytest.raises(ValueError, match="non pubblico"):
+    with pytest.raises(ValueError, match="non-public"):
         safety.fetch_url_limited("http://photos.example.com/me.png")
 
 
@@ -49,9 +49,9 @@ def test_server_photo_value_never_reads_local_files(tmp_path):
 def test_photo_size_checked_before_loading(tmp_path):
     big = tmp_path / "big.png"
     big.write_bytes(PNG + b"\x00" * (safety.PHOTO_MAX + 10))
-    with pytest.raises(ValueError, match="troppo grande"):
+    with pytest.raises(ValueError, match="too large"):
         load_photo(str(big))
-    with pytest.raises(ValueError, match="troppo grande"):
+    with pytest.raises(ValueError, match="too large"):
         load_photo("data:image/png;base64," + "A" * (safety.PHOTO_MAX * 2))
 
 
@@ -60,7 +60,7 @@ def test_local_files_confined_in_http_mode(tmp_path):
     try:
         assert safety.local_path("ok.vcf") == (tmp_path / "ok.vcf").resolve()
         for bad in ("../fuori.vcf", "/etc/hosts", "~/x.vcf"):
-            with pytest.raises(ValueError, match="non consentito"):
+            with pytest.raises(ValueError, match="not allowed"):
                 safety.local_path(bad)
     finally:
         safety.confine_local_files(None)
@@ -232,7 +232,7 @@ def test_task_alarms_relative_to_due():
     assert trig.params.get("RELATED") == "END"
     td2 = Todo()
     td2.add("uid", "T2")
-    with pytest.raises(ValueError, match="scadenza"):
+    with pytest.raises(ValueError, match="deadline"):
         apply_todo_fields(td2, TZ, summary="Senza date", alarms=["15m"])
 
 
