@@ -106,6 +106,12 @@ class DavClient:
     def request(self, method: str, path: str, *, content: bytes | str | None = None,
                 headers: dict[str, str] | None = None, ok: Iterable[int] = (200, 201, 204, 207)) -> httpx.Response:
         req = self._client.build_request(method, self.safe_path(path), content=content, headers=headers or {})
+        try:
+            return self._request(method, path, req, ok)
+        except httpx.TransportError as e:  # DNS, TLS, timeout, connessione chiusa: messaggio leggibile, non traceback
+            raise DavError(f"{method} {path}: server DAV non raggiungibile ({type(e).__name__}: {e or 'nessun dettaglio'})") from None
+
+    def _request(self, method: str, path: str, req: httpx.Request, ok: Iterable[int]) -> httpx.Response:
         raw = self._client.send(req, stream=True)
         try:
             declared = raw.headers.get("Content-Length")

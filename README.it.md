@@ -119,7 +119,7 @@ A ogni client basta poi `MAILCOW_DAV_ENV_FILE` con il percorso di questo file. U
 
 ```bash
 MAILCOW_DAV_ENV_FILE=$HOME/.config/mailcow-dav-mcp/.env \
-  uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0 mailcow-dav-mcp --check
+  uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.1 mailcow-dav-mcp --check
 ```
 
 **Opzione B: da un clone** (per sviluppo o per fissare una versione):
@@ -133,6 +133,15 @@ uv run mailcow-dav-mcp --check
 ```
 
 ✅ Output atteso: `OK server=... user=...` seguito da rubriche e calendari.
+
+> [!TIP]
+> **Aggiornamenti.** I comandi fissano un tag di release (`@v0.2.1`): esegui sempre una versione verificata e
+> un nuovo commit su `main` non ti arriva a sorpresa. `uvx` la tiene in cache in `~/.cache/uv`, quindi gli avvii
+> successivi sono immediati. Per aggiornare, cambia il tag nel comando e nella configurazione del client con
+> l'ultima [release](https://github.com/OakNet-io/mailcow-dav-mcp/tags).
+> Per seguire sempre `main`, togli il tag e aggiungi `--refresh` per scaricare i nuovi commit:
+> `uvx --refresh --from git+https://github.com/OakNet-io/mailcow-dav-mcp mailcow-dav-mcp --check`.
+> `uv cache clean mailcow-dav-mcp` rimuove la copia in cache.
 
 > [!NOTE]
 > Con un clone, nelle configurazioni qui sotto sostituisci `uvx --from git+…` con
@@ -148,7 +157,7 @@ uv run mailcow-dav-mcp --check
 ```bash
 claude mcp add mailcow-dav --scope user \
   -e MAILCOW_DAV_ENV_FILE=$HOME/.config/mailcow-dav-mcp/.env \
-  -- uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0 mailcow-dav-mcp
+  -- uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.1 mailcow-dav-mcp
 ```
 
 Verifica con `claude mcp list`, oppure scrivi `/mcp` in Claude Code.
@@ -171,7 +180,7 @@ Apri **Impostazioni → Sviluppatore → Modifica configurazione**, oppure modif
   "mcpServers": {
     "mailcow-dav": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0", "mailcow-dav-mcp"],
+      "args": ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.1", "mailcow-dav-mcp"],
       "env": {
         "MAILCOW_DAV_ENV_FILE": "/Users/tu/.config/mailcow-dav-mcp/.env"
       }
@@ -197,7 +206,7 @@ Una copia di questo esempio è in [claude_desktop_config.example.json](claude_de
 ```bash
 codex mcp add mailcow-dav \
   --env MAILCOW_DAV_ENV_FILE=$HOME/.config/mailcow-dav-mcp/.env \
-  -- uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0 mailcow-dav-mcp
+  -- uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.1 mailcow-dav-mcp
 ```
 
 Oppure aggiungilo a mano in `~/.codex/config.toml`. La CLI di Codex e l'estensione IDE usano lo stesso file:
@@ -205,7 +214,7 @@ Oppure aggiungilo a mano in `~/.codex/config.toml`. La CLI di Codex e l'estensio
 ```toml
 [mcp_servers.mailcow-dav]
 command = "uvx"
-args = ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0", "mailcow-dav-mcp"]
+args = ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.1", "mailcow-dav-mcp"]
 env = { MAILCOW_DAV_ENV_FILE = "/Users/tu/.config/mailcow-dav-mcp/.env" }
 ```
 
@@ -227,7 +236,7 @@ workspace (**Create plugins with MCPs**). Vedi la guida di OpenAI:
 
 ```bash
 MAILCOW_DAV_ENV_FILE=$HOME/.config/mailcow-dav-mcp/.env \
-  uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0 mailcow-dav-mcp --transport http --port 8000
+  uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.1 mailcow-dav-mcp --transport http --port 8000
 ```
 
 L'endpoint MCP è `http://127.0.0.1:8000/mcp`.
@@ -369,6 +378,7 @@ riga di continuazione vuota. Contatti di Apple e BusyContacts la uniscono poi al
 | Sintomo | Soluzione |
 |---|---|
 | 🚫 `401/403 — credenziali errate…` | Controlla utente e app password. L'app password deve consentire **DAV/SOGo**. |
+| 🔌 `server DAV non raggiungibile (ConnectError…)` | Controlla `MAILCOW_DAV_URL` (nome host, `https://`), DNS e rete o VPN. `ConnectTimeout`: firewall o porta errata. |
 | ❓ `Variabili mancanti: MAILCOW_DAV_URL…` | Il client non passa le variabili: controlla `MAILCOW_DAV_ENV_FILE` (percorso completo, niente `~`). |
 | 🧩 `spawn uvx ENOENT` (Claude Desktop) | Usa il percorso completo di `uvx` in `command`. |
 | 🔄 `412 … ETag` / "modificato da un altro client" | L'elemento è cambiato dopo la tua lettura. Rileggilo e riprova. |
