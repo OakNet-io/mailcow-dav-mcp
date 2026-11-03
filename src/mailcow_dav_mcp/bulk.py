@@ -29,6 +29,9 @@ CSV_COLUMNS = ["uid", "fn", "prefix", "given", "additional", "family", "suffix",
 LIST_SEP = " | "
 
 
+_MAX_CARD_FIELDS = 1000
+
+
 def _max_import_bytes() -> int:
     return int(os.environ.get("MAILCOW_DAV_MAX_IMPORT_MB", "20")) * 1024 * 1024
 
@@ -408,12 +411,14 @@ class Bulk:
         if len(raw) > _max_import_bytes():
             raise ValueError(f"File troppo grande (max {_max_import_bytes() // 1048576} MB: MAILCOW_DAV_MAX_IMPORT_MB); "
                              "dividilo in più file")
-        text = raw.decode("utf-8-sig")
+        text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")  # come read_text
         if p.suffix.lower() == ".csv":
             return self._from_csv(text)
         cards = []
         for comp in vobject.readComponents(text, ignoreUnreadable=True):
             if comp.name.upper() == "VCARD":
+                if sum(len(v) for v in comp.contents.values()) > _MAX_CARD_FIELDS:
+                    raise ValueError(f"Scheda con troppi campi (max {_MAX_CARD_FIELDS}): file non valido?")
                 cards.append(comp)
                 if len(cards) > _max_import_cards():
                     raise ValueError(_too_many())

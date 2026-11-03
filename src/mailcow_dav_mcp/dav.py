@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import posixpath
+import zlib
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -65,14 +66,13 @@ class Resource:
 class DavClient:
     def __init__(self, base_url: str, user: str, password: str, *, verify: bool = True, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
-        base = urlsplit(self.base_url)
-        self._origin = (base.scheme.lower(), (base.hostname or "").lower(), base.port)
+        self._origin = _origin(urlsplit(self.base_url))
         self._client = httpx.Client(
             base_url=self.base_url,
             auth=(user, password),
             verify=verify,
             timeout=timeout,
-            headers={"User-Agent": "mailcow-dav-mcp/0.2"},
+            headers={"User-Agent": "mailcow-dav-mcp/0.2", "Accept-Encoding": "gzip, deflate"},
             follow_redirects=False,
         )
 
@@ -94,8 +94,7 @@ class DavClient:
         schema/host/porta della configurazione; altrimenti è un errore (server o proxy ostile)."""
         parts = urlsplit(raw)
         if parts.scheme or parts.netloc:
-            origin = (parts.scheme.lower(), (parts.hostname or "").lower(), parts.port)
-            if origin != self._origin:
+            if _origin(parts) != self._origin:
                 raise DavError(f"Risposta DAV con href verso un altro host: {raw!r}")
         return self.safe_path(parts.path or "/")
 
@@ -115,11 +114,13 @@ class DavClient:
                 raise DavError(f"{method} {path}: risposta troppo grande ({int(declared) // 1048576} MB, "
                                f"max {limit // 1048576} MB: MAILCOW_DAV_MAX_RESPONSE_MB)")
             buf = bytearray()
-            for chunk in raw.iter_bytes():  # byte già decompressi: il limite vale anche contro le gzip bomb
-                buf.extend(chunk)
-                if len(buf) > limit:
-                    raise DavError(f"{method} {path}: risposta oltre {limit // 1048576} MB "
-                                   "(MAILCOW_DAV_MAX_RESPONSE_MB)")
+            decoder = _decoder(raw.headers.get("Content-Encoding", ""))
+            for chunk in raw.iter_raw():  # decompressione a pezzi limitati: niente picchi di memoria (gzip bomb)
+                for piece in decoder(chunk, limit + 1 - len(buf)):
+                    buf.extend(piece)
+                    if len(buf) > limit:
+                        raise DavError(f"{method} {path}: risposta oltre {limit // 1048576} MB "
+                                       "(MAILCOW_DAV_MAX_RESPONSE_MB)")
         finally:
             raw.close()
         hdrs = [(k, v) for k, v in raw.headers.multi_items() if k.lower() not in ("content-encoding", "content-length")]
@@ -207,6 +208,43 @@ class DavClient:
 
     def close(self) -> None:
         self._client.close()
+
+
+_DEFAULT_PORT = {"http": 80, "https": 443}
+
+
+def _origin(parts: Any) -> tuple[str, str, int | None]:
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or _DEFAULT_PORT.get(scheme)
+
+
+def _decoder(encoding: str) -> Callable[[bytes, int], Iterator[bytes]]:
+    """Decompressione incrementale con tetto: ogni pezzo prodotto è al massimo `room` byte (+64 KB)."""
+    enc = encoding.strip().lower()
+    if enc in ("", "identity"):
+        return lambda chunk, room: iter([chunk])
+    if enc not in ("gzip", "x-gzip", "deflate"):
+        raise DavError(f"Codifica della risposta non supportata: {encoding!r}")
+    state: dict[str, Any] = {"d": zlib.decompressobj(zlib.MAX_WBITS | 32)}  # gzip o zlib, autodetect
+
+    def run(chunk: bytes, room: int) -> Iterator[bytes]:
+        d = state["d"]
+        data = chunk
+        while data:
+            try:
+                out = d.decompress(data, max(1, min(room, 1 << 20)) + 65536)
+            except zlib.error:
+                if enc != "deflate" or state.get("raw"):
+                    raise DavError("Risposta compressa non valida") from None
+                state["d"], state["raw"] = zlib.decompressobj(-zlib.MAX_WBITS), True  # deflate "nudo"
+                d, data = state["d"], chunk
+                continue
+            yield out
+            room -= len(out)
+            if room <= 0:
+                return
+            data = d.unconsumed_tail
+    return run
 
 
 def multiget_xml(ns_root: str, root_name: str, data_ns: str, data_name: str, hrefs: list[str],

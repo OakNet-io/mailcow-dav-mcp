@@ -46,7 +46,6 @@ _init_lock = threading.Lock()
 
 _HINTS = {  # (readOnly, destructive, idempotent)
     "read": (True, False, True),
-    "export": (False, False, False),      # legge il DAV, scrive solo un file locale nuovo
     "create": (False, False, False),
     "destructive": (False, True, False),  # modifica o cancella dati esistenti
 }
@@ -68,7 +67,7 @@ def tool(kind: str, *, open_world: bool = False) -> Callable[[Callable[..., Any]
             return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
         mcp.tool(annotations=ToolAnnotations(readOnlyHint=ro, destructiveHint=destructive,
                                              idempotentHint=idempotent, openWorldHint=open_world))(run)
-        if kind in ("create", "destructive"):
+        if kind in ("create", "destructive") and fn.__name__ != "export_contacts":  # export: legge il DAV
             WRITE_TOOLS.add(fn.__name__)
         return fn
     return deco
@@ -151,7 +150,7 @@ def list_categories(addressbook: str = "personal") -> dict[str, int]:
     return _books().categories(addressbook)
 
 
-@tool("read")
+@tool("read", open_world=True)
 def get_contact_photo(uid: str, addressbook: str = "personal", fetch_url: bool = False) -> list:
     """Ritorna la foto del contatto come immagine (o un messaggio se non ne ha).
     Se la foto è solo un URL esterno viene restituito l'URL; fetch_url=true la scarica (il sito vede il tuo IP):
@@ -308,7 +307,7 @@ def remove_from_group(uid: str, group: str, addressbook: str = "personal") -> di
     return _books().remove_from_group(uid, group, addressbook)
 
 
-@tool("export")
+@tool("destructive")
 def export_contacts(addressbook: str = "personal", format: str = "vcf", path: str | None = None,
                     overwrite: bool = False) -> dict[str, Any]:
     """Esporta tutta una rubrica in un file locale: format vcf (copia esatta di ogni scheda, gruppi inclusi) o csv
@@ -589,7 +588,10 @@ def _confine() -> Any:
     """File locali (import, export, foto) limitati alla directory di export + MAILCOW_DAV_LOCAL_DIRS, sempre:
     testo ostile in una nota non deve poter far leggere o caricare sul server un file qualsiasi del computer."""
     export_dir = default_export_dir()
-    export_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        export_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:  # niente export/import, ma ricerca e calendario devono funzionare lo stesso
+        print(f"ATTENZIONE: impossibile creare {export_dir} ({e}): import/export non disponibili", file=sys.stderr)
     extra = [d for d in os.environ.get("MAILCOW_DAV_LOCAL_DIRS", "").split(os.pathsep) if d.strip()]
     confine_local_files([export_dir, *extra])
     return export_dir

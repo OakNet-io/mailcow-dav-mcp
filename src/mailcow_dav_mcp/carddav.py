@@ -484,8 +484,12 @@ class AddressBooks:
             if len(ph.value) > PHOTO_MAX:
                 raise ValueError(f"Foto incorporata troppo grande ({len(ph.value) // 1024} KB, max {PHOTO_MAX // 1024} KB)")
             return bytes(ph.value), _sniff_mime(bytes(ph.value))
+        value = str(ph.value).strip()
+        if value.startswith("data:"):
+            data = decode_data_uri(value, PHOTO_MAX)
+            return data, _sniff_mime(data)
         if not fetch_url:
-            return str(ph.value)
+            return value
         data, _ = load_photo(str(ph.value), allow_local=False)
         return data, _sniff_mime(data)
 
