@@ -19,7 +19,7 @@ from typing import Any, Callable
 import anyio
 
 from mcp.server.fastmcp import FastMCP, Image
-from mcp.types import TextContent
+from mcp.types import TextContent, ToolAnnotations
 
 from .bulk import Bulk, default_export_dir
 from .caldav import Calendars
@@ -44,16 +44,32 @@ mcp = FastMCP(
 _init_lock = threading.Lock()
 
 
-def tool() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Come @mcp.tool(), ma il corpo (sincrono: HTTP e parsing) gira in un thread di lavoro.
+_HINTS = {  # (readOnly, destructive, idempotent)
+    "read": (True, False, True),
+    "export": (False, False, False),      # legge il DAV, scrive solo un file locale nuovo
+    "create": (False, False, False),
+    "destructive": (False, True, False),  # modifica o cancella dati esistenti
+}
+WRITE_TOOLS: set[str] = set()  # tool che modificano il DAV: esclusi con MAILCOW_DAV_READ_ONLY=1
 
-    FastMCP eseguirebbe le funzioni sincrone direttamente nell'event loop: in modalità HTTP una scansione
-    lenta bloccherebbe tutte le altre richieste. functools.wraps conserva firma e docstring per lo schema."""
+
+def tool(kind: str, *, open_world: bool = False) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Come @mcp.tool(), con annotazioni MCP (sola lettura / distruttivo) e corpo eseguito in un thread.
+
+    Le annotazioni dicono al client quali tool richiedono conferma: testo ostile in una nota o in un invito
+    non deve poter far cancellare dati senza che l'utente lo veda. FastMCP eseguirebbe le funzioni sincrone
+    nell'event loop: in HTTP una scansione lenta bloccherebbe le altre richieste. functools.wraps conserva
+    firma e docstring per lo schema. open_world: il tool contatta terzi (inviti, risposte, URL esterni)."""
+    ro, destructive, idempotent = _HINTS[kind]
+
     def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(fn)
         async def run(*args: Any, **kwargs: Any) -> Any:
             return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
-        mcp.tool()(run)
+        mcp.tool(annotations=ToolAnnotations(readOnlyHint=ro, destructiveHint=destructive,
+                                             idempotentHint=idempotent, openWorldHint=open_world))(run)
+        if kind in ("create", "destructive"):
+            WRITE_TOOLS.add(fn.__name__)
         return fn
     return deco
 
@@ -90,7 +106,7 @@ def _bulk_once() -> Bulk:
 
 # ---------------------------------------------------------------- generale
 
-@tool()
+@tool("read")
 def dav_status() -> dict[str, Any]:
     """Verifica connessione e credenziali verso SOGo; ritorna principal, rubriche e calendari disponibili."""
     cfg, dav, books, cals = _ctx()
@@ -108,20 +124,20 @@ def dav_status() -> dict[str, Any]:
 
 # ---------------------------------------------------------------- rubrica
 
-@tool()
+@tool("read")
 def list_addressbooks() -> list[dict[str, Any]]:
     """Elenca le rubriche CardDAV dell'utente (id, nome). 'personal' è la rubrica principale."""
     return _books().list()
 
 
-@tool()
+@tool("read")
 def list_contacts(addressbook: str = "personal", limit: int = 500, category: str | None = None) -> list[dict[str, Any]]:
     """Elenca i contatti di una rubrica (fino a `limit` contatti; i gruppi non contano), opzionalmente solo
     quelli con un certo tag (`category`). Per rubriche grandi preferisci search_contacts."""
     return _books().all(addressbook, limit=limit, category=category)
 
 
-@tool()
+@tool("read")
 def search_contacts(query: str, addressbook: str = "personal", limit: int = 50,
                     category: str | None = None) -> list[dict[str, Any]]:
     """Cerca contatti per nome, cognome, nickname, email, telefono, azienda, note… (match parziale,
@@ -129,29 +145,33 @@ def search_contacts(query: str, addressbook: str = "personal", limit: int = 50,
     return _books().search(query, addressbook, limit=limit, category=category)
 
 
-@tool()
+@tool("read")
 def list_categories(addressbook: str = "personal") -> dict[str, int]:
     """Tag (categorie) usati nella rubrica, con numero di contatti per ciascuno."""
     return _books().categories(addressbook)
 
 
-@tool()
-def get_contact_photo(uid: str, addressbook: str = "personal") -> list:
-    """Ritorna la foto del contatto come immagine (o un messaggio se non ne ha)."""
-    res = _books().photo(uid, addressbook)
+@tool("read")
+def get_contact_photo(uid: str, addressbook: str = "personal", fetch_url: bool = False) -> list:
+    """Ritorna la foto del contatto come immagine (o un messaggio se non ne ha).
+    Se la foto è solo un URL esterno viene restituito l'URL; fetch_url=true la scarica (il sito vede il tuo IP):
+    usalo solo se l'utente lo chiede."""
+    res = _books().photo(uid, addressbook, fetch_url=fetch_url)
     if res is None:
         return [TextContent(type="text", text="Il contatto non ha una foto.")]
+    if isinstance(res, str):
+        return [TextContent(type="text", text=f"La foto è un URL esterno, non scaricato: {res}")]
     data, mime = res
     return [Image(data=data, format=mime.split("/")[1]).to_image_content()]
 
 
-@tool()
+@tool("read")
 def get_contact(uid: str, addressbook: str = "personal") -> dict[str, Any]:
     """Ritorna un contatto completo dato il suo UID."""
     return _books().get(uid, addressbook)
 
 
-@tool()
+@tool("create")
 def create_contact(
     fn: str | None = None,
     given: str | None = None,
@@ -188,7 +208,8 @@ def create_contact(
       es. "work:Via Roma 1;Milano;MI;20100;IT". Lascia vuoti i campi che non conosci: "Via Roma 1;Milano;;20100;".
     - birthday: YYYY-MM-DD
     - categories: tag per raggruppare (es. ["Cliente", "Fornitore"]); vedi list_categories per quelli già in uso.
-    - photo: URL http(s) pubblico, data-URI o path di un file immagine locale (max 2 MB); viene incorporata nel contatto.
+    - photo: URL http(s) pubblico, data-URI o path di un file immagine locale (max 2 MB) nella cartella di export o in
+      MAILCOW_DAV_LOCAL_DIRS; viene incorporata nel contatto.
     - prefix/additional/suffix: titolo (Dott., Ing.), secondo nome, suffisso (Jr.). department: reparto (con org).
       role: ruolo/funzione (title è la qualifica). im: ["telegram:@nome", "skype:id", "whatsapp:+39…"].
       assistant, spouse, anniversary (YYYY-MM-DD), timezone (es. Europe/Rome).
@@ -200,7 +221,7 @@ def create_contact(
                            anniversary=anniversary, im=im, timezone=timezone)
 
 
-@tool()
+@tool("destructive")
 def update_contact(
     uid: str,
     fn: str | None = None,
@@ -246,7 +267,7 @@ def update_contact(
                            anniversary=anniversary, im=im, timezone=timezone)
 
 
-@tool()
+@tool("destructive")
 def delete_contact(uid: str, addressbook: str = "personal", etag: str | None = None) -> dict[str, Any]:
     """Elimina definitivamente un contatto. Chiedi conferma all'utente prima di usarlo.
     etag: l'etag restituito da get/search/list per questo elemento. Se lo passi e nel frattempo un altro client
@@ -254,7 +275,7 @@ def delete_contact(uid: str, addressbook: str = "personal", etag: str | None = N
     return _books().delete(uid, addressbook, expected_etag=etag)
 
 
-@tool()
+@tool("read")
 def check_folding(addressbook: str = "personal") -> list[dict[str, Any]]:
     """Trova i contatti affetti dal bug di folding di SOGo (riga lunga esattamente 75, 149, 223… caratteri salvata
     con una continuazione vuota: Contatti Apple/BusyContacts mostrano il campo incollato a quello successivo,
@@ -263,7 +284,7 @@ def check_folding(addressbook: str = "personal") -> list[dict[str, Any]]:
     return _books().fold_problems(addressbook)
 
 
-@tool()
+@tool("read")
 def list_groups(addressbook: str = "personal") -> list[dict[str, Any]]:
     """Elenca i gruppi di contatti (quelli visibili in Contatti di Apple/SOGo): uid, name, members (UID dei contatti).
 
@@ -272,7 +293,7 @@ def list_groups(addressbook: str = "personal") -> list[dict[str, Any]]:
     return _books().groups(addressbook)
 
 
-@tool()
+@tool("create")
 def add_to_group(uid: str, group: str, addressbook: str = "personal", create: bool = False) -> dict[str, Any]:
     """Aggiunge un contatto (uid) a un gruppo, indicato per nome (es. "Fornitori") o per UID.
 
@@ -281,13 +302,13 @@ def add_to_group(uid: str, group: str, addressbook: str = "personal", create: bo
     return _books().add_to_group(uid, group, addressbook, create=create)
 
 
-@tool()
+@tool("destructive")
 def remove_from_group(uid: str, group: str, addressbook: str = "personal") -> dict[str, Any]:
     """Rimuove un contatto (uid) da un gruppo (nome o UID). Il contatto non viene eliminato."""
     return _books().remove_from_group(uid, group, addressbook)
 
 
-@tool()
+@tool("export")
 def export_contacts(addressbook: str = "personal", format: str = "vcf", path: str | None = None,
                     overwrite: bool = False) -> dict[str, Any]:
     """Esporta tutta una rubrica in un file locale: format vcf (copia esatta di ogni scheda, gruppi inclusi) o csv
@@ -298,10 +319,10 @@ def export_contacts(addressbook: str = "personal", format: str = "vcf", path: st
     return _bulk().export(addressbook, fmt=format, path=path, overwrite=overwrite)
 
 
-@tool()
+@tool("create")
 def import_contacts(path: str, addressbook: str = "personal", dry_run: bool = True,
                     skip_duplicates: bool = True) -> dict[str, Any]:
-    """Importa contatti da un file .vcf (una o più vCard) o .csv (stesse colonne dell'export: fn, given, family, org,
+    """Importa contatti da un file .vcf (una o più vCard) o .csv (nella cartella di export o in MAILCOW_DAV_LOCAL_DIRS) (stesse colonne dell'export: fn, given, family, org,
     emails, phones, …) nella rubrica. Con dry_run=true (default) mostra solo cosa verrebbe creato: chiama prima
     così, poi con dry_run=false dopo conferma dell'utente. skip_duplicates salta chi ha già un'email (o nome) presente.
     I gruppi del file vengono importati dopo i contatti, con i membri riscritti sugli UID effettivi (un gruppo con
@@ -311,14 +332,14 @@ def import_contacts(path: str, addressbook: str = "personal", dry_run: bool = Tr
 
 # ---------------------------------------------------------------- calendario
 
-@tool()
+@tool("read")
 def list_calendars() -> list[dict[str, Any]]:
     """Elenca i calendari CalDAV dell'utente (id, nome, colore). 'personal' è il calendario principale;
     gli altri hanno ID opachi (usa quello restituito qui). In tutti i tool `calendar="*"` = tutti i calendari."""
     return _cals().list()
 
 
-@tool()
+@tool("read")
 def list_events(
     start: str | None = None,
     end: str | None = None,
@@ -334,7 +355,7 @@ def list_events(
     return _cals().events(calendar, start, end, expand=expand_recurring, limit=limit)
 
 
-@tool()
+@tool("read")
 def search_events(query: str, calendar: str = "personal", start: str | None = None,
                   end: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     """Cerca eventi per testo in titolo, luogo, descrizione o categorie. Default: ±1 anno da oggi. calendar="*" = tutti.
@@ -343,13 +364,13 @@ def search_events(query: str, calendar: str = "personal", start: str | None = No
     return _cals().search(query, calendar, start, end, limit=limit)
 
 
-@tool()
+@tool("read")
 def get_event(uid: str, calendar: str = "personal") -> dict[str, Any]:
     """Ritorna un evento completo (master + eventuali eccezioni della ricorrenza) dato l'UID. calendar="*" lo cerca ovunque."""
     return _cals().get(uid, calendar)
 
 
-@tool()
+@tool("create", open_world=True)
 def create_event(
     summary: str,
     start: str,
@@ -381,7 +402,7 @@ def create_event(
                           categories=categories, privacy=privacy, busy=busy, url=url)
 
 
-@tool()
+@tool("destructive", open_world=True)
 def update_event(
     uid: str,
     summary: str | None = None,
@@ -420,7 +441,7 @@ def update_event(
                           rrule=rrule, status=status, categories=categories, privacy=privacy, busy=busy, url=url)
 
 
-@tool()
+@tool("destructive", open_world=True)
 def delete_event(uid: str, calendar: str = "personal", occurrence: str | None = None,
                  etag: str | None = None) -> dict[str, Any]:
     """Elimina un evento. Con `occurrence` (recurrence_id o inizio di un'occorrenza) elimina SOLO quella dalla serie;
@@ -431,7 +452,7 @@ def delete_event(uid: str, calendar: str = "personal", occurrence: str | None = 
     return _cals().delete(uid, calendar, occurrence=occurrence, expected_etag=etag)
 
 
-@tool()
+@tool("destructive", open_world=True)
 def respond_to_invitation(uid: str, response: str, calendar: str = "personal", comment: str | None = None) -> dict[str, Any]:
     """Risponde a un invito ricevuto: response = accept | decline | tentative. SOGo notifica l'organizzatore.
     Funziona solo se l'utente è tra gli attendee dell'evento."""
@@ -440,19 +461,19 @@ def respond_to_invitation(uid: str, response: str, calendar: str = "personal", c
 
 # ---------------------------------------------------------------- task
 
-@tool()
+@tool("read")
 def list_tasks(calendar: str = "personal", include_completed: bool = False, limit: int = 200) -> list[dict[str, Any]]:
     """Task (to-do) del calendario, ordinati per scadenza e priorità. calendar="*" = tutti i calendari."""
     return _cals().tasks(calendar, include_completed=include_completed, limit=limit)
 
 
-@tool()
+@tool("read")
 def get_task(uid: str, calendar: str = "personal") -> dict[str, Any]:
     """Ritorna un task completo dato l'UID."""
     return _cals().get_task(uid, calendar)
 
 
-@tool()
+@tool("create")
 def create_task(
     summary: str,
     due: str | None = None,
@@ -471,7 +492,7 @@ def create_task(
                                start=start, categories=categories, alarms=alarms, location=location, url=url)
 
 
-@tool()
+@tool("destructive")
 def update_task(
     uid: str,
     summary: str | None = None,
@@ -498,7 +519,7 @@ def update_task(
                                categories=categories, alarms=alarms, location=location, url=url)
 
 
-@tool()
+@tool("destructive")
 def delete_task(uid: str, calendar: str = "personal", etag: str | None = None) -> dict[str, Any]:
     """Elimina definitivamente un task. Chiedi conferma all'utente prima.
     etag: l'etag restituito da get/search/list per questo elemento. Se lo passi e nel frattempo un altro client
@@ -552,16 +573,33 @@ def _run_http(host: str, port: int, path: str) -> None:
     mcp.settings.host, mcp.settings.port, mcp.settings.streamable_http_path = host, port, path
     mcp.settings.transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins)
-    # un client remoto non deve poter leggere/scrivere file arbitrari della macchina: solo la directory di export
-    export_dir = default_export_dir()
-    export_dir.mkdir(parents=True, exist_ok=True)
-    confine_local_files(export_dir)
+    export_dir = _confine()
+    if not token:
+        print("ATTENZIONE: nessun MAILCOW_DAV_MCP_TOKEN: ogni processo di questa macchina può leggere e modificare "
+              "rubrica e calendario tramite questo endpoint. Imposta un token anche in locale.", file=sys.stderr)
     app: Any = mcp.streamable_http_app()
     if token:
         app = _BearerAuth(app, token)
     print(f"mailcow-dav-mcp: http://{host}:{port}{path} (auth: {'bearer token' if token else 'nessuna, solo locale'}; "
           f"file locali limitati a {export_dir})", file=sys.stderr)
     uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+def _confine() -> Any:
+    """File locali (import, export, foto) limitati alla directory di export + MAILCOW_DAV_LOCAL_DIRS, sempre:
+    testo ostile in una nota non deve poter far leggere o caricare sul server un file qualsiasi del computer."""
+    export_dir = default_export_dir()
+    export_dir.mkdir(parents=True, exist_ok=True)
+    extra = [d for d in os.environ.get("MAILCOW_DAV_LOCAL_DIRS", "").split(os.pathsep) if d.strip()]
+    confine_local_files([export_dir, *extra])
+    return export_dir
+
+
+def _apply_read_only() -> None:
+    if os.environ.get("MAILCOW_DAV_READ_ONLY", "").strip().lower() in ("1", "true", "yes", "on"):
+        for name in sorted(WRITE_TOOLS):
+            mcp.remove_tool(name)
+        print(f"mailcow-dav-mcp: sola lettura, {len(WRITE_TOOLS)} tool di scrittura disattivati", file=sys.stderr)
 
 
 def _check() -> None:
@@ -586,13 +624,17 @@ def main() -> None:
     parser.add_argument("--host", default=None, help="default 127.0.0.1 (MAILCOW_DAV_MCP_HOST)")
     parser.add_argument("--port", type=int, default=None, help="default 8000 (MAILCOW_DAV_MCP_PORT)")
     parser.add_argument("--path", default=None, help="default /mcp (MAILCOW_DAV_MCP_PATH)")
-    _load_dotenv()  # prima di leggere token/host/export dir: devono valere anche se stanno solo nel .env
     args = parser.parse_args()
+    try:
+        _load_dotenv()  # prima di leggere token/host/export dir: devono valere anche se stanno solo nel .env
+    except RuntimeError as e:
+        raise SystemExit(f"ERRORE CONFIG: {e}") from None
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if args.check:
         _check()
         return
     transport = args.transport or os.environ.get("MAILCOW_DAV_MCP_TRANSPORT", "stdio")
+    _apply_read_only()
     if transport == "http":
         _run_http(args.host or os.environ.get("MAILCOW_DAV_MCP_HOST", "127.0.0.1"),
                   args.port or int(os.environ.get("MAILCOW_DAV_MCP_PORT", "8000")),
@@ -600,6 +642,7 @@ def main() -> None:
     elif transport != "stdio":
         raise SystemExit(f"ERRORE: MAILCOW_DAV_MCP_TRANSPORT={transport!r} (usa stdio o http)")
     else:
+        _confine()
         mcp.run(transport="stdio")
 
 

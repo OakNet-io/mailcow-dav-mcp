@@ -27,6 +27,14 @@ CSV_COLUMNS = ["uid", "fn", "prefix", "given", "additional", "family", "suffix",
                "title", "role", "emails", "phones", "addresses", "categories", "urls", "im", "birthday",
                "anniversary", "spouse", "assistant", "timezone", "note"]
 LIST_SEP = " | "
+
+
+def _max_import_bytes() -> int:
+    return int(os.environ.get("MAILCOW_DAV_MAX_IMPORT_MB", "20")) * 1024 * 1024
+
+
+def _max_import_cards() -> int:
+    return int(os.environ.get("MAILCOW_DAV_MAX_IMPORT_CARDS", "10000"))
 _FORMULA_START = ("=", "+", "-", "@", "\t", "\r", "'")
 _LIST_FIELDS = {"emails", "phones", "addresses", "categories", "urls", "im"}
 # Alias di intestazione (italiano/inglese, Outlook/Google) → colonna canonica
@@ -395,13 +403,20 @@ class Bulk:
         p = local_path(path)
         if not p.is_file():
             raise ValueError(f"File non trovato: {path}")
-        text = p.read_text(encoding="utf-8-sig")
+        with p.open("rb") as fh:  # limite sui byte letti, non solo sulla dimensione dichiarata
+            raw = fh.read(_max_import_bytes() + 1)
+        if len(raw) > _max_import_bytes():
+            raise ValueError(f"File troppo grande (max {_max_import_bytes() // 1048576} MB: MAILCOW_DAV_MAX_IMPORT_MB); "
+                             "dividilo in più file")
+        text = raw.decode("utf-8-sig")
         if p.suffix.lower() == ".csv":
             return self._from_csv(text)
         cards = []
         for comp in vobject.readComponents(text, ignoreUnreadable=True):
             if comp.name.upper() == "VCARD":
                 cards.append(comp)
+                if len(cards) > _max_import_cards():
+                    raise ValueError(_too_many())
         if not cards:
             raise ValueError("Nessuna vCard trovata nel file")
         return cards
@@ -422,6 +437,8 @@ class Bulk:
             if not fields:
                 continue
             cards.append(new_vcard(uid=_cell_unsafe((row.get("uid") or "").strip()) or None, **fields))
+            if len(cards) > _max_import_cards():
+                raise ValueError(_too_many())
         if not cards:
             raise ValueError(f"Nessun contatto nel CSV (colonne riconosciute: {', '.join(CSV_COLUMNS)})")
         return cards
@@ -443,3 +460,8 @@ def _set_members(card: vobject.base.Component, members: list[str]) -> None:
             card.remove(m)
     for m in members:
         card.add("x-addressbookserver-member").value = m
+
+
+def _too_many() -> str:
+    return (f"Troppe schede nel file (max {_max_import_cards()}: MAILCOW_DAV_MAX_IMPORT_CARDS); "
+            "dividilo in più file")

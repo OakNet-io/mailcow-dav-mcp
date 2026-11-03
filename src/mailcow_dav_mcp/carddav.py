@@ -456,25 +456,36 @@ class AddressBooks:
         raise NotFound(f"Contatto con UID {uid!r} non trovato in {book!r}")
 
     def _with_etag(self, href: str, text: str, etag: str | None) -> tuple[str, str, str | None]:
-        """Se il REPORT non ha dato l'ETag, rileggo contenuto ed ETag insieme con un GET (coerenti tra loro)."""
+        """Se il REPORT non ha dato l'ETag, rileggo contenuto ed ETag insieme con un GET (coerenti tra loro).
+
+        Se nel frattempo la risorsa contiene un'altra scheda (UID diverso), mi fermo: l'ETag nuovo
+        autorizzerebbe una modifica o cancellazione sulla scheda sbagliata."""
         if etag:
             return href, text, etag
-        text, etag = self.dav.get(href)
-        return href, text, etag
+        expected = _card_uid(text)
+        fresh, etag = self.dav.get(href)
+        if _card_uid(fresh) != expected:
+            raise PreconditionFailed(f"La scheda {expected!r} è stata sostituita da un altro client: riprova")
+        return href, fresh, etag
 
     def get(self, uid: str, book: str = "personal") -> dict[str, Any]:
         href, text, etag = self._find_href(uid, book)
         return vcard_to_dict(vobject.readOne(text), href=href, etag=etag)
 
-    def photo(self, uid: str, book: str = "personal") -> tuple[bytes, str] | None:
-        """(bytes, mime) della foto incorporata, o None."""
+    def photo(self, uid: str, book: str = "personal", fetch_url: bool = False) -> tuple[bytes, str] | str | None:
+        """(bytes, mime) della foto incorporata, None se manca. Una foto per URL viene scaricata solo con
+        fetch_url=True (altrimenti ritorna l'URL): scaricarla rivela a quel sito IP e momento dell'accesso."""
         _, text, _ = self._find_href(uid, book)
         card = vobject.readOne(text)
         ph = getattr(card, "photo", None)
         if ph is None or not ph.value:
             return None
         if isinstance(ph.value, (bytes, bytearray)):
+            if len(ph.value) > PHOTO_MAX:
+                raise ValueError(f"Foto incorporata troppo grande ({len(ph.value) // 1024} KB, max {PHOTO_MAX // 1024} KB)")
             return bytes(ph.value), _sniff_mime(bytes(ph.value))
+        if not fetch_url:
+            return str(ph.value)
         data, _ = load_photo(str(ph.value), allow_local=False)
         return data, _sniff_mime(data)
 

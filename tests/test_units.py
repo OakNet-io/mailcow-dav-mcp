@@ -114,7 +114,7 @@ def test_multistatus_parse():
         <D:propstat><D:prop><D:getetag/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat>
       </D:response>
     </D:multistatus>"""
-    res = DavClient.parse_multistatus(xml)
+    res = DavClient("https://dav.example.com", "u", "p").parse_multistatus(xml)
     assert len(res) == 1
     r = res[0]
     assert r.name == "personal"

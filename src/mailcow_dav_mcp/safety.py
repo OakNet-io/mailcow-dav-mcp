@@ -65,29 +65,39 @@ def check_expected_etag(expected: str | None, current: str | None, what: str) ->
 
 # -- file locali --------------------------------------------------------------------
 
-_confine_dir: Path | None = None
+_confine_dirs: list[Path] | None = None
 
 
-def confine_local_files(directory: str | Path | None) -> None:
-    """Con una directory impostata (modalità HTTP), import/export/foto possono usare solo file al suo interno."""
-    global _confine_dir
-    _confine_dir = Path(directory).expanduser().resolve() if directory else None
+def confine_local_files(directories: str | Path | list[str | Path] | None) -> None:
+    """Con una o più directory impostate, import/export/foto possono usare solo file al loro interno.
+
+    Il server lo attiva sempre (stdio e HTTP): un testo malevolo in una nota non deve poter far leggere
+    o caricare sul server DAV un file qualsiasi del computer. None = nessun vincolo (uso come libreria)."""
+    global _confine_dirs
+    if directories is None:
+        _confine_dirs = None
+        return
+    items = directories if isinstance(directories, list) else [directories]
+    _confine_dirs = [Path(d).expanduser().resolve() for d in items if str(d).strip()]
 
 
 def confined_dir() -> Path | None:
-    return _confine_dir
+    """Directory principale consentita (base dei path relativi e dell'export), se il confinamento è attivo."""
+    return _confine_dirs[0] if _confine_dirs else None
 
 
 def local_path(raw: str) -> Path:
-    """Risolve un path fornito dall'utente; se è attivo il confinamento lo vincola alla directory consentita."""
+    """Risolve un path fornito dall'utente; se è attivo il confinamento lo vincola alle directory consentite."""
     p = Path(os.path.expanduser(raw.strip()))
-    if _confine_dir is None:
+    if _confine_dirs is None:
         return p
     if not p.is_absolute():
-        p = _confine_dir / p
+        p = _confine_dirs[0] / p
     resolved = p.resolve()
-    if resolved != _confine_dir and _confine_dir not in resolved.parents:
-        raise ValueError(f"Path non consentito: in modalità HTTP sono accessibili solo i file in {_confine_dir}")
+    if not any(resolved == d or d in resolved.parents for d in _confine_dirs):
+        allowed = ", ".join(str(d) for d in _confine_dirs)
+        raise ValueError(f"Path non consentito: sono accessibili solo i file in {allowed} "
+                         "(aggiungi cartelle con MAILCOW_DAV_LOCAL_DIRS)")
     return resolved
 
 

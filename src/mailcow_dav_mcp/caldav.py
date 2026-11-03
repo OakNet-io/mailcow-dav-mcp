@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+import time as _clock
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -13,7 +14,7 @@ import recurring_ical_events
 from icalendar import Alarm, Calendar, Event, Todo, vCalAddress, vRecur, vText
 from lxml import etree
 
-from .dav import NS_APPLE, NS_CAL, NS_CS, NS_D, NSMAP, DavClient, NotFound, Resource
+from .dav import NS_APPLE, NS_CAL, NS_CS, NS_D, NSMAP, DavClient, NotFound, PreconditionFailed, Resource
 from .safety import check_expected_etag, collection_segment, is_safe_name
 from .tzgen import vtimezone
 
@@ -25,7 +26,40 @@ _RECURRENCE_PROPS = {"RRULE", "RDATE", "EXDATE", "EXRULE", "RECURRENCE-ID"}
 _GENERATED = "X-MAILCOW-DAV-MCP"  # marca le VTIMEZONE generate da noi (le altre non si toccano)
 MAX_EXPAND = 2000  # occorrenze massime espanse per singola risorsa in una lettura
 _SERIES_SCAN = 10000  # occorrenze massime percorse per calcolare la fine di una serie con COUNT
-_FREQ_RE = re.compile(r"(?:^|;)FREQ=(SECONDLY|MINUTELY)(?:;|$)", re.I)
+_EXPAND_SECONDS = 5.0  # budget di tempo per espandere una risorsa
+_TZ_YEARS = 50  # copertura massima delle VTIMEZONE generate oltre oggi
+_CTRL_RE = re.compile(r"[\r\n\x00]")
+
+
+def _rrule_problem(comp: Event | Todo) -> str | None:
+    """Motivo per cui una regola di ricorrenza non va espansa (dateutil cicla all'infinito con INTERVAL=0,
+    e SECONDLY/MINUTELY generano milioni di occorrenze), oppure None se è gestibile."""
+    for key in ("rrule", "exrule"):
+        rules = comp.get(key)
+        for rule in (rules if isinstance(rules, list) else [rules] if rules is not None else []):
+            freq = str((rule.get("FREQ") or [""])[0]).upper()
+            if freq in ("SECONDLY", "MINUTELY"):
+                return f"FREQ={freq} non supportata"
+            try:
+                interval = int((rule.get("INTERVAL") or [1])[0])
+            except (TypeError, ValueError):
+                return "INTERVAL non valido"
+            if interval < 1:
+                return "INTERVAL deve essere almeno 1"
+    return None
+
+
+def _check_rrule(text: str) -> vRecur:
+    """Valida una RRULE scritta dall'utente prima di salvarla."""
+    if _CTRL_RE.search(text):
+        raise ValueError("rrule non può contenere a capo")
+    rule = vRecur.from_ical(text)
+    probe = Event()
+    probe.add("rrule", rule)
+    problem = _rrule_problem(probe)
+    if problem:
+        raise ValueError(f"rrule: {problem} (usa almeno FREQ=HOURLY e INTERVAL>=1)")
+    return rule
 
 
 # -- date/ora ---------------------------------------------------------------
@@ -315,7 +349,11 @@ def apply_event_fields(ev: Event, tz: ZoneInfo, *, summary: str | None = None, s
             raw = raw.strip()
             if not raw:
                 continue
+            if _CTRL_RE.search(raw):
+                raise ValueError(f"attendee non valido (contiene a capo): {raw!r}")
             name, email = (raw.rsplit("<", 1)[0].strip(), raw.rsplit("<", 1)[1].rstrip(">").strip()) if "<" in raw else (None, raw)
+            if not re.fullmatch(r"[^\s<>@]+@[^\s<>@]+", email):
+                raise ValueError(f"Email partecipante non valida: {email!r}")
             a = vCalAddress(f"mailto:{email}")
             if name:
                 a.params["CN"] = vText(name)
@@ -330,10 +368,7 @@ def apply_event_fields(ev: Event, tz: ZoneInfo, *, summary: str | None = None, s
         if "rrule" in ev:
             del ev["rrule"]
         if rrule:
-            text = rrule.strip().removeprefix("RRULE:")
-            if _FREQ_RE.search(text):
-                raise ValueError("rrule: FREQ=SECONDLY/MINUTELY non supportate (usa almeno HOURLY)")
-            ev.add("rrule", vRecur.from_ical(text))
+            ev.add("rrule", _check_rrule(rrule.strip().removeprefix("RRULE:")))
         else:
             # rrule="" = evento singolo: via anche date aggiuntive/escluse (le eccezioni le toglie Calendars.update)
             for k in ("rdate", "exdate", "exrule"):
@@ -492,7 +527,7 @@ def _series_end(comp: Event | Todo) -> date | None:
 
     rule = comp.get("rrule")
     start = comp.decoded("dtstart") if comp.get("dtstart") is not None else None
-    if rule is None or start is None:
+    if rule is None or start is None or _rrule_problem(comp):
         return None
     text = rule.to_ical().decode()
     m = re.search(r"UNTIL=(\d{8})", text)
@@ -502,9 +537,10 @@ def _series_end(comp: Event | Todo) -> date | None:
         return None
     naive = start.replace(tzinfo=None) if isinstance(start, datetime) else datetime.combine(start, time(0, 0))
     last = naive
+    deadline = _clock.monotonic() + _EXPAND_SECONDS
     try:
         for i, occ in enumerate(rrulestr(text, dtstart=naive)):
-            if i >= _SERIES_SCAN:
+            if i >= _SERIES_SCAN or _clock.monotonic() > deadline:
                 return None
             last = occ
     except Exception:
@@ -549,7 +585,9 @@ def _add_timezones(cal: Calendar) -> None:
                 last = None if series_end is None or last is None else max(last, series_end)
                 if series_end is None:
                     break
-        vtz = vtimezone(zi, min(dates) if dates else None, last)
+        horizon = date(date.today().year + _TZ_YEARS, 12, 31)
+        first = max(min(dates), date(1900, 1, 1)) if dates else None
+        vtz = vtimezone(zi, first, min(last, horizon) if last else None)
         vtz.add(_GENERATED, "generated")
         cal.add_component(vtz)
     if unknown:
@@ -575,9 +613,10 @@ def _has_uid(cal: Calendar, comp: str, uid: str) -> bool:
     return any(str(c.get("UID", "")).strip() == u for c in cal.walk(comp))
 
 
-def _master_of(cal: Calendar, comp: str) -> Event | Todo:
-    """Il componente principale della serie (senza RECURRENCE-ID), qualunque sia l'ordine nel file."""
-    items = list(cal.walk(comp))
+def _master_of(cal: Calendar, comp: str, uid: str | None = None) -> Event | Todo:
+    """Il componente principale della serie (senza RECURRENCE-ID), qualunque sia l'ordine nel file.
+    Con `uid` considera solo i componenti con quell'UID (una risorsa con più UID non deve confondere)."""
+    items = [c for c in cal.walk(comp) if uid is None or str(c.get("UID", "")).strip() == uid.strip()]
     masters = [c for c in items if c.get("recurrence-id") is None]
     if masters:
         return masters[0]
@@ -680,11 +719,14 @@ class Calendars:
         """Occorrenze in [start, end) con un tetto (MAX_EXPAND): una regola enorme non esaurisce la memoria."""
         out: list[Event] = []
         end_utc = _utc(end, self.tz)
+        if any(_rrule_problem(ev) for ev in cal.walk("VEVENT")):
+            return list(cal.walk("VEVENT")), True  # regola non espandibile in sicurezza: componenti così come sono
+        deadline = _clock.monotonic() + _EXPAND_SECONDS
         try:
             for occ in recurring_ical_events.of(cal, keep_recurrence_attributes=True).after(start):
                 if occ.get("dtstart") is not None and _utc(occ.decoded("dtstart"), self.tz) >= end_utc:
                     break
-                if len(out) >= MAX_EXPAND:
+                if len(out) >= MAX_EXPAND or _clock.monotonic() > deadline:
                     # oltre il tetto restano comunque le eccezioni (occorrenze modificate) nell'intervallo
                     start_utc = _utc(start, self.tz)
                     for ex in cal.walk("VEVENT"):
@@ -747,7 +789,10 @@ class Calendars:
                 if _has_uid(cal, comp, uid):
                     if not r.etag:  # contenuto ed ETag devono essere coerenti: li rileggo insieme
                         text, etag = self.dav.get(r.href)
-                        return r.href, Calendar.from_ical(text), etag, cal_id
+                        fresh = Calendar.from_ical(text)
+                        if not _has_uid(fresh, comp, uid):  # sostituita tra REPORT e GET: non è più lei
+                            raise PreconditionFailed(f"{comp} {uid!r} sostituito da un altro client: riprova")
+                        return r.href, fresh, etag, cal_id
                     return r.href, cal, r.etag, cal_id
         raise NotFound(f"{comp} con UID {uid!r} non trovato in {calendar!r}")
 
@@ -759,7 +804,8 @@ class Calendars:
 
     def get(self, uid: str, calendar: str = "personal") -> dict[str, Any]:
         href, cal, etag, cal_id = self._find(uid, calendar)
-        evs = [event_to_dict(ev, self.tz, href=href, etag=etag) for ev in cal.walk("VEVENT")]
+        evs = [event_to_dict(ev, self.tz, href=href, etag=etag) for ev in cal.walk("VEVENT")
+               if str(ev.get("UID", "")).strip() == uid.strip()]
         if not evs:
             raise NotFound(f"Nessun VEVENT in {href}")
         master = next((e for e in evs if not e.get("recurrence_id")), evs[0])
@@ -799,6 +845,10 @@ class Calendars:
         for ev in cal.walk("VEVENT"):
             if ev.get("recurrence-id") is not None and same(ev.decoded("recurrence-id")):
                 return ev
+        master = _master_of(cal, "VEVENT")
+        problem = _rrule_problem(master)
+        if problem:
+            raise ValueError(f"Serie non gestibile ({problem}): modificala da un altro client")
         query = recurring_ical_events.of(cal, keep_recurrence_attributes=True)
         lo = datetime.combine(wanted.date(), time(0, 0), tzinfo=self.tz) if date_only else wanted - timedelta(days=1)
         hi = lo + timedelta(days=1) if date_only else wanted + timedelta(days=1)
@@ -816,8 +866,9 @@ class Calendars:
                 return occ
         raise NotFound(f"Nessuna occorrenza della serie corrisponde a {occurrence}")
 
-    def _master(self, cal: Calendar) -> Event:
-        masters = [ev for ev in cal.walk("VEVENT") if ev.get("recurrence-id") is None]
+    def _master(self, cal: Calendar, uid: str | None = None) -> Event:
+        masters = [ev for ev in cal.walk("VEVENT") if ev.get("recurrence-id") is None
+                   and (uid is None or str(ev.get("UID", "")).strip() == uid.strip())]
         if not masters:
             raise NotFound("Nessun VEVENT master")
         return masters[0]
@@ -832,7 +883,7 @@ class Calendars:
                expected_etag: str | None = None, **fields: Any) -> dict[str, Any]:
         href, cal, etag, cal_id = self._find(uid, calendar)
         check_expected_etag(expected_etag, etag, f"L'evento {uid}")
-        master = self._master(cal)
+        master = self._master(cal, uid)
         if occurrence:
             self._require_series(master, uid)
             if fields.get("rrule") is not None:
@@ -878,7 +929,7 @@ class Calendars:
                expected_etag: str | None = None) -> dict[str, Any]:
         href, cal, etag, cal_id = self._find(uid, calendar)
         check_expected_etag(expected_etag, etag, f"L'evento {uid}")
-        master = self._master(cal)
+        master = self._master(cal, uid)
         if not occurrence:
             self.dav.delete(href, etag=etag)
             return {"deleted": True, "uid": uid, "href": href, "calendar": cal_id}
@@ -957,7 +1008,7 @@ class Calendars:
 
     def get_task(self, uid: str, calendar: str = "personal") -> dict[str, Any]:
         href, cal, etag, cal_id = self._find(uid, calendar, comp="VTODO")
-        d = todo_to_dict(_master_of(cal, "VTODO"), self.tz, href=href, etag=etag)
+        d = todo_to_dict(_master_of(cal, "VTODO", uid), self.tz, href=href, etag=etag)
         d["calendar"] = cal_id
         return d
 
@@ -982,7 +1033,7 @@ class Calendars:
                     **fields: Any) -> dict[str, Any]:
         href, cal, etag, cal_id = self._find(uid, calendar, comp="VTODO")
         check_expected_etag(expected_etag, etag, f"Il task {uid}")
-        td = _master_of(cal, "VTODO")
+        td = _master_of(cal, "VTODO", uid)
         apply_todo_fields(td, self.tz, email=self.user, **fields)
         new_etag = self._put(href, cal, etag)
         d = todo_to_dict(td, self.tz, href=href, etag=new_etag)

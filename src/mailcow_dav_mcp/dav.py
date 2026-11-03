@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import posixpath
 from dataclasses import dataclass, field
 from typing import Iterable
 from urllib.parse import unquote, urlsplit
@@ -16,6 +18,11 @@ NS_CS = "http://calendarserver.org/ns/"
 NS_APPLE = "http://apple.com/ns/ical/"
 
 NSMAP = {"D": NS_D, "C": NS_CARD, "CAL": NS_CAL, "CS": NS_CS, "A": NS_APPLE}
+
+
+# Tetto sulle risposte del server (byte dopo la decompressione): una risposta ostile o enorme non esaurisce la RAM.
+def max_response() -> int:
+    return int(os.environ.get("MAILCOW_DAV_MAX_RESPONSE_MB", "64")) * 1024 * 1024
 
 
 class DavError(RuntimeError):
@@ -58,6 +65,8 @@ class Resource:
 class DavClient:
     def __init__(self, base_url: str, user: str, password: str, *, verify: bool = True, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
+        base = urlsplit(self.base_url)
+        self._origin = (base.scheme.lower(), (base.hostname or "").lower(), base.port)
         self._client = httpx.Client(
             base_url=self.base_url,
             auth=(user, password),
@@ -69,9 +78,52 @@ class DavClient:
 
     # -- basso livello --------------------------------------------------
 
+    @staticmethod
+    def safe_path(path: str) -> str:
+        """Solo un path assoluto sul server configurato: niente URL completi (porterebbero le credenziali Basic
+        verso un altro host), niente '//' iniziale, niente segmenti '..' (anche codificati)."""
+        if not path.startswith("/") or path.startswith("//") or "\\" in path:
+            raise DavError(f"Path DAV non valido: {path!r}")
+        segments = unquote(path).split("/")
+        if any(seg in ("..", ".") for seg in segments) or any(ord(c) < 32 for c in unquote(path)):
+            raise DavError(f"Path DAV non valido: {path!r}")
+        return path
+
+    def _href_path(self, raw: str) -> str:
+        """href restituito dal server → path locale. Un href assoluto è accettato solo se punta allo stesso
+        schema/host/porta della configurazione; altrimenti è un errore (server o proxy ostile)."""
+        parts = urlsplit(raw)
+        if parts.scheme or parts.netloc:
+            origin = (parts.scheme.lower(), (parts.hostname or "").lower(), parts.port)
+            if origin != self._origin:
+                raise DavError(f"Risposta DAV con href verso un altro host: {raw!r}")
+        return self.safe_path(parts.path or "/")
+
+    @staticmethod
+    def _within(href: str, base: str) -> bool:
+        h, b = posixpath.normpath(unquote(href)), posixpath.normpath(unquote(base))
+        return h == b or h.startswith(b.rstrip("/") + "/")
+
     def request(self, method: str, path: str, *, content: bytes | str | None = None,
                 headers: dict[str, str] | None = None, ok: Iterable[int] = (200, 201, 204, 207)) -> httpx.Response:
-        r = self._client.request(method, path, content=content, headers=headers or {})
+        req = self._client.build_request(method, self.safe_path(path), content=content, headers=headers or {})
+        raw = self._client.send(req, stream=True)
+        try:
+            declared = raw.headers.get("Content-Length")
+            limit = max_response()
+            if declared and declared.isdigit() and int(declared) > limit:
+                raise DavError(f"{method} {path}: risposta troppo grande ({int(declared) // 1048576} MB, "
+                               f"max {limit // 1048576} MB: MAILCOW_DAV_MAX_RESPONSE_MB)")
+            buf = bytearray()
+            for chunk in raw.iter_bytes():  # byte già decompressi: il limite vale anche contro le gzip bomb
+                buf.extend(chunk)
+                if len(buf) > limit:
+                    raise DavError(f"{method} {path}: risposta oltre {limit // 1048576} MB "
+                                   "(MAILCOW_DAV_MAX_RESPONSE_MB)")
+        finally:
+            raw.close()
+        hdrs = [(k, v) for k, v in raw.headers.multi_items() if k.lower() not in ("content-encoding", "content-length")]
+        r = httpx.Response(raw.status_code, headers=hdrs, content=bytes(buf), request=req)
         if r.status_code == 404:
             raise NotFound(f"{method} {path}: 404 Not Found")
         if r.status_code == 412:
@@ -83,11 +135,10 @@ class DavClient:
             raise DavError(f"{method} {path}: HTTP {r.status_code} {snippet}")
         return r
 
-    @staticmethod
-    def parse_multistatus(content: bytes) -> list[Resource]:
+    def parse_multistatus(self, content: bytes, within: str | None = None) -> list[Resource]:
         """Parsing rigoroso: un XML troncato o malformato è un errore, non un elenco parziale (un backup
         incompleto non deve sembrare riuscito). Niente entità esterne né accesso alla rete."""
-        parser = etree.XMLParser(recover=False, huge_tree=True, resolve_entities=False, no_network=True)
+        parser = etree.XMLParser(recover=False, huge_tree=False, resolve_entities=False, no_network=True)
         try:
             root = etree.fromstring(content, parser=parser)
         except etree.XMLSyntaxError as e:
@@ -99,7 +150,9 @@ class DavClient:
             href_el = resp.find(f"{{{NS_D}}}href")
             if href_el is None or not href_el.text:
                 continue
-            href = urlsplit(href_el.text.strip()).path or href_el.text.strip()
+            href = self._href_path(href_el.text.strip())
+            if within is not None and not self._within(href, within):
+                raise DavError(f"Risposta DAV con href fuori da {within}: {href!r}")
             res = Resource(href=href)
             for propstat in resp.findall(f"{{{NS_D}}}propstat"):
                 status = propstat.findtext(f"{{{NS_D}}}status") or ""
@@ -122,12 +175,12 @@ class DavClient:
         body = etree.tostring(root, xml_declaration=True, encoding="utf-8")
         r = self.request("PROPFIND", path, content=body,
                          headers={"Depth": str(depth), "Content-Type": "application/xml; charset=utf-8"})
-        return self.parse_multistatus(r.content)
+        return self.parse_multistatus(r.content, within=path)
 
     def report(self, path: str, body: bytes, depth: int = 1) -> list[Resource]:
         r = self.request("REPORT", path, content=body,
                          headers={"Depth": str(depth), "Content-Type": "application/xml; charset=utf-8"})
-        return self.parse_multistatus(r.content)
+        return self.parse_multistatus(r.content, within=path)
 
     def get(self, path: str) -> tuple[str, str | None]:
         r = self.request("GET", path)
