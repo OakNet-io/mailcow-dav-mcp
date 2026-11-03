@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mailcow-dav": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp", "mailcow-dav-mcp"],
+      "env": {
+        "MAILCOW_DAV_ENV_FILE": "/Users/you/.config/mailcow-dav-mcp/.env"
+      }
+    }
+  }
+}
