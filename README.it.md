@@ -119,7 +119,7 @@ A ogni client basta poi `MAILCOW_DAV_ENV_FILE` con il percorso di questo file. U
 
 ```bash
 MAILCOW_DAV_ENV_FILE=$HOME/.config/mailcow-dav-mcp/.env \
-  uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp mailcow-dav-mcp --check
+  uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0 mailcow-dav-mcp --check
 ```
 
 **Opzione B: da un clone** (per sviluppo o per fissare una versione):
@@ -148,7 +148,7 @@ uv run mailcow-dav-mcp --check
 ```bash
 claude mcp add mailcow-dav --scope user \
   -e MAILCOW_DAV_ENV_FILE=$HOME/.config/mailcow-dav-mcp/.env \
-  -- uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp mailcow-dav-mcp
+  -- uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0 mailcow-dav-mcp
 ```
 
 Verifica con `claude mcp list`, oppure scrivi `/mcp` in Claude Code.
@@ -171,7 +171,7 @@ Apri **Impostazioni → Sviluppatore → Modifica configurazione**, oppure modif
   "mcpServers": {
     "mailcow-dav": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp", "mailcow-dav-mcp"],
+      "args": ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0", "mailcow-dav-mcp"],
       "env": {
         "MAILCOW_DAV_ENV_FILE": "/Users/tu/.config/mailcow-dav-mcp/.env"
       }
@@ -197,7 +197,7 @@ Una copia di questo esempio è in [claude_desktop_config.example.json](claude_de
 ```bash
 codex mcp add mailcow-dav \
   --env MAILCOW_DAV_ENV_FILE=$HOME/.config/mailcow-dav-mcp/.env \
-  -- uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp mailcow-dav-mcp
+  -- uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0 mailcow-dav-mcp
 ```
 
 Oppure aggiungilo a mano in `~/.codex/config.toml`. La CLI di Codex e l'estensione IDE usano lo stesso file:
@@ -205,7 +205,7 @@ Oppure aggiungilo a mano in `~/.codex/config.toml`. La CLI di Codex e l'estensio
 ```toml
 [mcp_servers.mailcow-dav]
 command = "uvx"
-args = ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp", "mailcow-dav-mcp"]
+args = ["--from", "git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0", "mailcow-dav-mcp"]
 env = { MAILCOW_DAV_ENV_FILE = "/Users/tu/.config/mailcow-dav-mcp/.env" }
 ```
 
@@ -227,7 +227,7 @@ workspace (**Create plugins with MCPs**). Vedi la guida di OpenAI:
 
 ```bash
 MAILCOW_DAV_ENV_FILE=$HOME/.config/mailcow-dav-mcp/.env \
-  uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp mailcow-dav-mcp --transport http --port 8000
+  uvx --from git+https://github.com/OakNet-io/mailcow-dav-mcp@v0.2.0 mailcow-dav-mcp --transport http --port 8000
 ```
 
 L'endpoint MCP è `http://127.0.0.1:8000/mcp`.
@@ -271,17 +271,17 @@ mkdir -p ~/.config/mailcow-dav-mcp
 (umask 077; openssl rand -hex 32 > ~/.config/mailcow-dav-mcp/token)
 export MAILCOW_DAV_MCP_TOKEN="$(cat ~/.config/mailcow-dav-mcp/token)"
 MAILCOW_DAV_MCP_ALLOWED_HOSTS=mcp.example.com \
-  mailcow-dav-mcp --transport http --host 0.0.0.0 --port 8000
+  mailcow-dav-mcp --transport http --host 127.0.0.1 --port 8000
 ```
 
-`MAILCOW_DAV_MCP_ALLOWED_HOSTS` è il nome host pubblico usato dai client: senza, il server risponde `421`.
+Pubblicalo con un reverse proxy TLS sulla stessa macchina, che inoltra `https://mcp.example.com/mcp` a
+`http://127.0.0.1:8000/mcp`. Usa `--host 0.0.0.0` solo in una rete privata e mai senza TLS davanti: il token viaggia
+in un header. `MAILCOW_DAV_MCP_ALLOWED_HOSTS` è il nome host pubblico usato dai client: senza, il server risponde `421`.
 Sulla macchina del client leggi lo stesso token:
 
 - Claude Code: `claude mcp add --transport http mailcow-dav https://mcp.example.com/mcp -H "Authorization: Bearer $(cat ~/.config/mailcow-dav-mcp/token)"`
 - Codex: `export MAILCOW_DAV_MCP_TOKEN="$(cat ~/.config/mailcow-dav-mcp/token)"` nella shell che avvia Codex, poi
   `codex mcp add mailcow-dav --url https://mcp.example.com/mcp --bearer-token-env-var MAILCOW_DAV_MCP_TOKEN`
-
-Metti davanti un reverse proxy con TLS: il token viaggia in un header.
 
 </details>
 
@@ -297,7 +297,11 @@ Metti davanti un reverse proxy con TLS: il token viaggia in un header.
 | 🧭 `MAILCOW_DAV_PRINCIPAL_PATH` | `/SOGo/dav/<user>/` | Da cambiare se la radice DAV è altrove |
 | 🔏 `MAILCOW_DAV_VERIFY_SSL` | `1` | `0` disattiva la verifica TLS (solo per test) |
 | ⏱️ `MAILCOW_DAV_TIMEOUT` | `30` | Timeout HTTP verso il server DAV, in secondi |
-| 📦 `MAILCOW_DAV_EXPORT_DIR` | `~/mailcow-dav-exports` | Cartella predefinita degli export. In modalità HTTP è l'unica cartella che i tool possono leggere o scrivere. |
+| 📦 `MAILCOW_DAV_EXPORT_DIR` | `~/mailcow-dav-exports` | Cartella predefinita degli export e base dei percorsi relativi. Import, export e foto locali possono usare solo file in questa cartella o in `MAILCOW_DAV_LOCAL_DIRS`. |
+| 📂 `MAILCOW_DAV_LOCAL_DIRS` | — | Cartelle aggiuntive che i tool possono leggere o scrivere, separate da `:` (`;` su Windows), es. `~/Downloads` |
+| 👁️ `MAILCOW_DAV_READ_ONLY` | `0` | `1` nasconde tutti i tool che modificano contatti, calendari o task. Ricerca, lettura ed export restano. |
+| 📏 `MAILCOW_DAV_MAX_RESPONSE_MB` | `64` | Dimensione massima di una risposta DAV, dopo la decompressione |
+| 📥 `MAILCOW_DAV_MAX_IMPORT_MB` / `_CARDS` | `20` / `10000` | Dimensione massima del file e numero massimo di schede per import |
 | 🚚 `MAILCOW_DAV_MCP_TRANSPORT` | `stdio` | `stdio` o `http` (come `--transport`) |
 | 🔌 `MAILCOW_DAV_MCP_HOST` / `_PORT` / `_PATH` | `127.0.0.1` / `8000` / `/mcp` | Indirizzo di ascolto HTTP e percorso dell'endpoint |
 | 🎟️ `MAILCOW_DAV_MCP_TOKEN` | — | Token bearer richiesto su ogni richiesta HTTP. Obbligatorio se l'host non è loopback. |
@@ -313,8 +317,10 @@ Riga di comando: `mailcow-dav-mcp [--check] [--transport stdio|http] [--host H] 
 | 🔄 **Modifiche concorrenti** | Ogni modifica e cancellazione è condizionata all'ETag (`If-Match`). Le scritture senza ETag noto vengono rifiutate. Passa ai tool di modifica/cancellazione l'`etag` restituito da `get_*`/`search_*`: se un altro client ha cambiato l'elemento dopo la tua lettura, l'operazione fallisce invece di sovrascrivere. |
 | 🖼️ **Foto da URL** | I download vanno solo verso indirizzi IP pubblici. Ogni redirect viene verificato, la connessione usa l'IP già controllato (niente DNS rebinding) e il download si ferma a 2 MB. I riferimenti a foto salvati sul server non vengono mai letti dal disco locale. |
 | 📁 **Percorsi** | Gli ID di rubriche e calendari devono essere un solo segmento di percorso. I nomi delle risorse non derivano mai dall'UID di un file importato. Gli export non sovrascrivono un file esistente senza `overwrite=true` e vengono scritti in modo atomico con permessi `600`. |
-| 🌐 **Modalità HTTP** | Loopback per default, token obbligatorio su qualsiasi altro indirizzo, controllo degli header `Host`/`Origin`, accesso ai file limitato a `MAILCOW_DAV_EXPORT_DIR`. |
-| 🗑️ **Cancellazioni** | I tool chiedono all'assistente di confermare prima con te. Lascia attive per questi tool le richieste di approvazione del client. |
+| 🌐 **Modalità HTTP** | Loopback per default, token obbligatorio su qualsiasi altro indirizzo, controllo degli header `Host`/`Origin`. Senza token ogni processo della macchina può usare l'endpoint: impostalo anche su loopback. |
+| 🗂️ **File locali** | In ogni modalità import, export e foto locali sono limitati a `MAILCOW_DAV_EXPORT_DIR` e `MAILCOW_DAV_LOCAL_DIRS`. |
+| 🧷 **Risposte del server DAV** | Sono accettati solo percorsi sull'host configurato e dentro la collezione richiesta, così le credenziali non vanno mai altrove. Risposte e import hanno limiti di dimensione. Le regole di ricorrenza che non terminano non vengono espanse. |
+| 🗑️ **Cancellazioni e prompt injection** | Note, titoli e inviti arrivano da altre persone e possono contenere istruzioni. I tool hanno annotazioni MCP (`readOnlyHint`, `destructiveHint`, `openWorldHint`), così i client possono chiedere conferma prima delle modifiche. Lascia attive le approvazioni per i tool di scrittura, oppure imposta `MAILCOW_DAV_READ_ONLY=1`. Le foto salvate come URL esterno si scaricano solo con `fetch_url=true`. |
 
 > [!IMPORTANT]
 > Hai trovato una vulnerabilità? Apri una [segnalazione di sicurezza privata](https://github.com/OakNet-io/mailcow-dav-mcp/security/advisories/new)

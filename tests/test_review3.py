@@ -170,11 +170,11 @@ def test_truncated_multistatus_is_an_error():
     ok = (b'<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"><D:response><D:href>/a/1.vcf</D:href>'
           b'<D:propstat><D:prop><D:getetag>"1"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status>'
           b'</D:propstat></D:response></D:multistatus>')
-    assert len(DavClient.parse_multistatus(ok)) == 1
+    assert len(DavClient("https://dav.example.com", "u", "p").parse_multistatus(ok)) == 1
     with pytest.raises(DavError, match="malformato"):
-        DavClient.parse_multistatus(ok[:-40])
+        DavClient("https://dav.example.com", "u", "p").parse_multistatus(ok[:-40])
     with pytest.raises(DavError, match="multistatus"):
-        DavClient.parse_multistatus(b'<?xml version="1.0"?><html/>')
+        DavClient("https://dav.example.com", "u", "p").parse_multistatus(b'<?xml version="1.0"?><html/>')
 
 
 # -- 5. promemoria dei task --------------------------------------------------------------------

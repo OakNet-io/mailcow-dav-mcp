@@ -1,4 +1,4 @@
-"""Configurazione da variabili d'ambiente (o file .env nella root del progetto)."""
+"""Configurazione da variabili d'ambiente (o da un file .env indicato da MAILCOW_DAV_ENV_FILE)."""
 
 from __future__ import annotations
 
@@ -7,25 +7,36 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _project_env() -> Path:
+    """Il .env nella cartella del progetto (utile con un clone; con uvx non esiste)."""
+    return Path(__file__).resolve().parents[2] / ".env"
+
+
 def _load_dotenv() -> None:
-    """Carica un .env minimale senza dipendenze esterne. Le variabili già presenti vincono."""
-    candidates = [
-        Path(os.environ.get("MAILCOW_DAV_ENV_FILE", "")),
-        Path.cwd() / ".env",
-        Path(__file__).resolve().parents[2] / ".env",
-    ]
-    for path in candidates:
-        if not path or not path.is_file():
+    """Carica un .env minimale senza dipendenze esterne. Le variabili già presenti vincono.
+
+    Fonti: MAILCOW_DAV_ENV_FILE (se impostata il file deve esistere: niente ripiego silenzioso) oppure il .env
+    nella cartella del progetto (clone). Mai la cartella corrente: un repo qualsiasi aperto nel client potrebbe
+    contenerne uno ostile. Solo chiavi MAILCOW_DAV_*: un .env non può impostare proxy o altre variabili."""
+    explicit = os.environ.get("MAILCOW_DAV_ENV_FILE", "").strip()
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.is_file():
+            raise RuntimeError(f"MAILCOW_DAV_ENV_FILE punta a un file inesistente: {path}")
+    else:
+        path = _project_env()
+        if not path.is_file():
+            return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
             continue
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            os.environ.setdefault(key, value)
-        break
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key.startswith("MAILCOW_DAV_"):
+            continue
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
 
 
 @dataclass(frozen=True)
